@@ -241,5 +241,72 @@ inline torch::Tensor sensor_depth_loss(
     return masked.sum() / num_valid;
 }
 
+/**
+ * @brief Edge-aware Smoothness Loss (L_smooth)
+ * 
+ * Encourages depth to be locally smooth, weighted by image gradients.
+ * This preserves edges where image changes sharply while smoothing
+ * uniform regions.
+ * 
+ * L_smooth = mean(|∂D/∂x| * exp(-|∂I/∂x|) + |∂D/∂y| * exp(-|∂I/∂y|))
+ * 
+ * @param depth Rendered depth [1, H, W] or [H, W]
+ * @param image RGB image [C, H, W] normalized to 0-1
+ * @return Scalar smoothness loss
+ */
+inline torch::Tensor smoothness_loss(
+    torch::Tensor depth,
+    torch::Tensor image)
+{
+    // Ensure depth is [1, H, W]
+    if (depth.dim() == 2) {
+        depth = depth.unsqueeze(0);
+    }
+    if (depth.dim() == 3 && depth.size(0) != 1) {
+        depth = depth.index({0}).unsqueeze(0);  // Take first channel if multiple
+    }
+    
+    // Ensure image is [C, H, W]
+    if (image.dim() == 4) {
+        image = image.squeeze(0);  // Remove batch dimension if present
+    }
+    
+    // Compute depth gradients using 1x2 kernel (neighbor difference)
+    // ∂D/∂x = D(x+1, y) - D(x, y)
+    auto d_dx = torch::abs(
+        depth.index({"...", torch::indexing::Slice(), torch::indexing::Slice(1, torch::indexing::None)}) - 
+        depth.index({"...", torch::indexing::Slice(), torch::indexing::Slice(torch::indexing::None, -1)})
+    );
+    // ∂D/∂y = D(x, y+1) - D(x, y)
+    auto d_dy = torch::abs(
+        depth.index({"...", torch::indexing::Slice(1, torch::indexing::None), torch::indexing::Slice()}) - 
+        depth.index({"...", torch::indexing::Slice(torch::indexing::None, -1), torch::indexing::Slice()})
+    );
+    
+    // Compute image gradients (mean across color channels)
+    // ∂I/∂x
+    auto i_dx = torch::mean(torch::abs(
+        image.index({"...", torch::indexing::Slice(), torch::indexing::Slice(1, torch::indexing::None)}) - 
+        image.index({"...", torch::indexing::Slice(), torch::indexing::Slice(torch::indexing::None, -1)})
+    ), /*dim=*/0, /*keepdim=*/true);
+    // ∂I/∂y
+    auto i_dy = torch::mean(torch::abs(
+        image.index({"...", torch::indexing::Slice(1, torch::indexing::None), torch::indexing::Slice()}) - 
+        image.index({"...", torch::indexing::Slice(torch::indexing::None, -1), torch::indexing::Slice()})
+    ), /*dim=*/0, /*keepdim=*/true);
+    
+    // Compute edge-aware weights: w = exp(-|∂I|)
+    // Where image changes sharply, weight is low (allow depth discontinuity)
+    // Where image is uniform, weight is high (enforce smooth depth)
+    auto w_x = torch::exp(-i_dx);
+    auto w_y = torch::exp(-i_dy);
+    
+    // Weighted smoothness loss
+    auto loss_x = (d_dx * w_x).mean();
+    auto loss_y = (d_dy * w_y).mean();
+    
+    return loss_x + loss_y;
+}
+
 }
 

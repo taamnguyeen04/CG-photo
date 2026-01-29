@@ -884,3 +884,157 @@ python Photo-SLAM-eval/onekey.py --results results_lgeo
 - So sánh metrics với PA3 (L_align) và baseline
 - Tune lambda_geo nếu cần (0.5–2.0 range)
 
+---
+
+## [2026-01-29 15:20] Phase 6: Edge-aware Smoothness Loss (L_smooth)
+
+### Mục đích
+Thêm **Edge-aware Smoothness Loss (L_smooth)** để làm giảm hiện tượng mesh bị lồi lõm (bumpy surfaces). Loss này ép depth map phải trơn tru ở những vùng màu sắc đồng nhất, nhưng vẫn giữ được cạnh sắc nét ở nơi ảnh RGB có sự thay đổi lớn.
+
+### Công thức toán học
+
+$$L_{smooth} = \frac{1}{N} \sum_{p} \left( \lambda_x(p) \cdot |\partial_x D(p)| + \lambda_y(p) \cdot |\partial_y D(p)| \right)$$
+
+**Trong đó:**
+- $|\partial_x D(x, y)| = |D(x+1, y) - D(x, y)|$ — Gradient depth theo trục x (kernel 1x2)
+- $|\partial_y D(x, y)| = |D(x, y+1) - D(x, y)|$ — Gradient depth theo trục y (kernel 2x1)
+- $\lambda_x(p) = e^{-|\partial_x I(p)|}$ — Trọng số dựa trên gradient ảnh RGB
+- $\lambda_y(p) = e^{-|\partial_y I(p)|}$
+
+**Cơ chế:**
+- Vùng tường phẳng (màu đồng nhất): $|\partial I| \approx 0 \Rightarrow \lambda \approx 1$ → Ép depth phẳng mạnh.
+- Vùng cạnh vật thể (màu thay đổi): $|\partial I|$ lớn $\Rightarrow \lambda \approx 0$ → Cho phép depth thay đổi.
+
+---
+
+### Files được sửa
+
+#### 📄 `include/loss_utils.h` (SỬA)
+Thêm hàm `smoothness_loss()`:
+
+```cpp
+inline torch::Tensor smoothness_loss(torch::Tensor depth, torch::Tensor image)
+{
+    // Compute depth gradients using 1x2 kernel
+    auto d_dx = torch::abs(depth[..., :, 1:] - depth[..., :, :-1]);
+    auto d_dy = torch::abs(depth[..., 1:, :] - depth[..., :-1, :]);
+    
+    // Compute image gradients (mean across RGB channels)
+    auto i_dx = torch::mean(torch::abs(image[..., :, 1:] - image[..., :, :-1]), 0, true);
+    auto i_dy = torch::mean(torch::abs(image[..., 1:, :] - image[..., :-1, :]), 0, true);
+    
+    // Edge-aware weights: w = exp(-|∂I|)
+    auto w_x = torch::exp(-i_dx);
+    auto w_y = torch::exp(-i_dy);
+    
+    return (d_dx * w_x).mean() + (d_dy * w_y).mean();
+}
+```
+
+---
+
+#### 📄 `src/gaussian_mapper.cpp` (SỬA)
+
+**1. Compute L_smooth (dòng 793-795):**
+```cpp
+// Edge-aware Smoothness Loss (L_smooth)
+auto L_smooth = loss_utils::smoothness_loss(depth, gt_image);
+```
+
+**2. Thêm lambda_smooth và tích hợp vào total loss (dòng 800-810):**
+```cpp
+float lambda_smooth = 0.01f;   // Edge-aware smoothness
+
+auto loss = (1.0 - lambda_dssim) * Ll1
+          + lambda_dssim * (1.0 - DSSIM)
+          + lambda_geo * L_geo
+          + lambda_var * L_var
+          + lambda_smooth * L_smooth;  // NEW
+```
+
+**3. Cập nhật logging CSV (dòng 820-840):**
+- Header: `"iteration,L1,DSSIM,L_geo,L_var,L_smooth,total"`
+- Thêm `float smooth_val = L_smooth.item<float>();`
+
+---
+
+### Weight tuning guide
+
+| lambda_smooth | Hiệu ứng |
+|---------------|----------|
+| 0.001 | Rất nhẹ, gần như không ảnh hưởng |
+| 0.01 | **Mặc định** - Cân bằng smooth và chi tiết |
+| 0.05 | Trung bình mạnh - Mesh mượt hơn |
+| 0.1+ | Rất mạnh - Có thể làm mờ chi tiết |
+
+---
+
+### Verification
+- ✅ Build successful (100%)
+- ✅ All executables linked
+- ⏳ Chưa chạy benchmark
+
+### Next steps
+- Chạy training trên Replica/TUM để đánh giá hiệu quả
+- Nếu mesh vẫn lồi lõm, tăng `lambda_smooth` lên 0.05 hoặc 0.1
+- Nếu mất chi tiết, giảm xuống 0.005
+
+---
+
+## [2026-01-29 15:35] Phase 6.1: Configurable Loss Weights via YAML
+
+### Mục đích
+Cho phép thay đổi trọng số các loss function từ file config YAML mà **không cần build lại**.
+
+### Files được sửa
+
+#### 📄 `include/gaussian_parameters.h`
+Thêm các member variables vào `GaussianOptimizationParams`:
+```cpp
+float lambda_geo_ = 0.5f;
+float lambda_smooth_ = 0.01f;
+float lambda_var_ = 0.0f;
+float lambda_iso_ = 0.0f;
+float lambda_align_ = 0.0f;
+```
+
+#### 📄 `src/gaussian_mapper.cpp` - readConfigFromFile()
+Thêm code đọc loss weights từ config:
+```cpp
+if (!settings_file["Optimization.lambda_geo"].empty())
+    opt_params_.lambda_geo_ = settings_file["Optimization.lambda_geo"].operator float();
+// ... similar for other lambdas
+```
+
+#### 📄 `src/gaussian_mapper.cpp` - trainForOneIteration()
+Thay thế hardcoded values bằng `opt_params_`:
+```cpp
+float lambda_geo = opt_params_.lambda_geo_;
+float lambda_smooth = opt_params_.lambda_smooth_;
+// ...
+```
+
+#### 📄 `cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml`
+#### 📄 `cfg/gaussian_mapper/RGB-D/TUM/tum_rgbd.yaml`
+Thêm các parameters mới:
+```yaml
+# Loss Weights (Depth-Photo-SLAM)
+Optimization.lambda_geo: 0.5
+Optimization.lambda_smooth: 0.01
+Optimization.lambda_var: 0.0
+Optimization.lambda_iso: 0.0
+Optimization.lambda_align: 0.0
+```
+
+### Verification
+- ✅ Build successful (100%)
+- ✅ All executables linked
+
+### Cách sử dụng
+Chỉ cần sửa file YAML và chạy lại chương trình:
+```bash
+# Ví dụ: tăng lambda_smooth lên 0.05
+nano cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml
+./bin/replica_rgbd ...
+```
+

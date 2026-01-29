@@ -9,11 +9,6 @@ import torch
 import trimesh
 from scipy.spatial import cKDTree as KDTree
 
-# Set reproducible seed
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
-
 '''
 reconstruction evaluation tools
 modified from https://github.com/cvg/nice-slam/blob/master/src/tools/eval_recon.py

@@ -366,6 +366,18 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
     densify_min_opacity_ =
         settings_file["Optimization.densify_min_opacity"].operator float();
 
+    // Depth-Photo-SLAM: Loss weights (with defaults if not in config)
+    if (!settings_file["Optimization.lambda_geo"].empty())
+        opt_params_.lambda_geo_ = settings_file["Optimization.lambda_geo"].operator float();
+    if (!settings_file["Optimization.lambda_smooth"].empty())
+        opt_params_.lambda_smooth_ = settings_file["Optimization.lambda_smooth"].operator float();
+    if (!settings_file["Optimization.lambda_var"].empty())
+        opt_params_.lambda_var_ = settings_file["Optimization.lambda_var"].operator float();
+    if (!settings_file["Optimization.lambda_iso"].empty())
+        opt_params_.lambda_iso_ = settings_file["Optimization.lambda_iso"].operator float();
+    if (!settings_file["Optimization.lambda_align"].empty())
+        opt_params_.lambda_align_ = settings_file["Optimization.lambda_align"].operator float();
+
     // Viewer Parameters
     rendered_image_viewer_scale_ =
         settings_file["GaussianViewer.image_scale"].operator float();
@@ -758,20 +770,34 @@ void GaussianMapper::trainForOneIteration()
     auto Ll1 = loss_utils::l1_loss(masked_image, gt_image);
     float lambda_dssim = lambdaDssim();
     
-    // Depth-Photo-SLAM: Compute depth-aware losses
-    // Compute depth variance: Var(d) = E[d^2] - E[d]^2
-    auto depth_variance = depth_sq - depth * depth;
-    // Alignment loss: RE-ENABLED for hybrid approach (PA8)
-    auto L_align = loss_utils::depth_alignment_loss(depth, median_depth);
-    // Variance loss: encourage low variance (confident depth estimates)
-    auto L_var = loss_utils::uncertainty_variance_loss(depth_variance);
-    // Isotropy loss: penalize needle-like Gaussians (uses log scales internally)
-    // auto L_iso = loss_utils::isotropy_loss(gaussians_->scaling_, 1.5f, true);  // DISABLED for PA8
+    // Read loss weights from config (early to enable conditional computation)
+    float lambda_geo = opt_params_.lambda_geo_;
+    float lambda_align = opt_params_.lambda_align_;
+    float lambda_var = opt_params_.lambda_var_;
+    float lambda_iso = opt_params_.lambda_iso_;
+    float lambda_smooth = opt_params_.lambda_smooth_;
     
-    // Geometric sensor depth loss (L_geo): direct supervision from RGBD sensor
+    // Depth-Photo-SLAM: Compute depth-aware losses (ONLY if lambda > 0)
+    torch::Tensor L_align = torch::zeros(1, torch::TensorOptions().device(device_type_));
+    torch::Tensor L_var = torch::zeros(1, torch::TensorOptions().device(device_type_));
     torch::Tensor L_geo = torch::zeros(1, torch::TensorOptions().device(device_type_));
+    torch::Tensor L_smooth = torch::zeros(1, torch::TensorOptions().device(device_type_));
     
-    if (has_gt_depth) {
+    // Compute depth variance (needed for L_var)
+    auto depth_variance = depth_sq - depth * depth;
+    
+    // L_align: Alignment loss (only if enabled)
+    if (lambda_align > 0.0f) {
+        L_align = loss_utils::depth_alignment_loss(depth, median_depth);
+    }
+    
+    // L_var: Variance loss (only if enabled)
+    if (lambda_var > 0.0f) {
+        L_var = loss_utils::uncertainty_variance_loss(depth_variance);
+    }
+    
+    // L_geo: Geometric sensor depth loss (only if enabled AND has GT depth)
+    if (lambda_geo > 0.0f && has_gt_depth) {
         // Create valid depth mask: exclude invalid sensor readings
         auto depth_valid_mask = (gt_depth > RGBD_min_depth_) & (gt_depth < RGBD_max_depth_);
         
@@ -782,7 +808,6 @@ void GaussianMapper::trainForOneIteration()
         auto depth_squeezed = depth.squeeze();
         
         // Compute L_geo using sensor_depth_loss
-        // This compares rendered depth with ground truth depth from sensor
         L_geo = loss_utils::sensor_depth_loss(
             depth_squeezed,       // Rendered depth [H, W]
             gt_depth,             // Ground truth depth [H, W]
@@ -790,19 +815,19 @@ void GaussianMapper::trainForOneIteration()
         );
     }
     
-    // Combine losses with weights
-    // PA8: Hybrid approach - L_geo + L_align for multi-view consistency
-    float lambda_geo = 0.5f;       // PA10: Higher
-    float lambda_align = 0.0f;     // PA10: DISABLED
-    float lambda_var = 0.0f;
-    float lambda_iso = 0.0f;
+    // L_smooth: Edge-aware Smoothness Loss (only if enabled)
+    if (lambda_smooth > 0.0f) {
+        L_smooth = loss_utils::smoothness_loss(depth, gt_image);
+    }
     
+    // Combine losses with weights
     auto loss = (1.0 - lambda_dssim) * Ll1
                 + lambda_dssim * (1.0 - loss_utils::ssim(masked_image, gt_image, device_type_))
-                + lambda_geo * L_geo         // Sensor depth loss
-                + lambda_align * L_align     // RE-ENABLED for PA8
-                + lambda_var * L_var;
-                // + lambda_iso * L_iso;     // DISABLED for PA8
+                + lambda_geo * L_geo
+                + lambda_align * L_align
+                + lambda_var * L_var
+                + lambda_smooth * L_smooth;
+                // + lambda_iso * L_iso;  // TODO: Add isotropy loss when needed
     
     // ========================================================================
     // LOSS COMPONENT LOGGING - Log individual loss values for visualization
@@ -814,7 +839,7 @@ void GaussianMapper::trainForOneIteration()
     if (loss_log_interval > 0 && !loss_log_initialized && getIteration() == 1) {
         auto loss_log_path = result_dir_ / "loss_components.csv";
         loss_log_file.open(loss_log_path);
-        loss_log_file << "iteration,L1,DSSIM,L_geo,L_var,total" << std::endl;  // Changed L_align to L_geo
+        loss_log_file << "iteration,L1,DSSIM,L_geo,L_var,L_smooth,total" << std::endl;
         loss_log_initialized = true;
     }
     
@@ -822,14 +847,15 @@ void GaussianMapper::trainForOneIteration()
         auto L_dssim = 1.0 - loss_utils::ssim(masked_image, gt_image, device_type_);
         float l1_val = Ll1.item<float>();
         float dssim_val = L_dssim.item<float>();
-        float geo_val = L_geo.item<float>();    // Changed from align_val
-        float var_val = L_var.item<float>();    // Log variance even if disabled
+        float geo_val = L_geo.item<float>();
+        float var_val = L_var.item<float>();
+        float smooth_val = L_smooth.item<float>();
         float total_val = loss.item<float>();
         
         if (loss_log_file.is_open()) {
             loss_log_file << getIteration() << "," 
                          << l1_val << "," << dssim_val << "," 
-                         << geo_val << "," << var_val << ","  // Changed from align_val, iso_val
+                         << geo_val << "," << var_val << "," << smooth_val << ","
                          << total_val << std::endl;
         }
     }

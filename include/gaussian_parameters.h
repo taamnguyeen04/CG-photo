@@ -93,4 +93,11 @@ public:
     int densify_from_iter_;
     int densify_until_iter_;
     float densify_grad_threshold_;
+    
+    // Depth-Photo-SLAM: Loss weights (configurable via YAML)
+    float lambda_geo_ = 0.5f;        // L_geo: Sensor depth L1 loss
+    float lambda_smooth_ = 0.01f;    // L_smooth: Edge-aware smoothness
+    float lambda_var_ = 0.0f;        // L_var: Depth variance
+    float lambda_iso_ = 0.0f;        // L_iso: Gaussian isotropy
+    float lambda_align_ = 0.0f;      // L_align: Depth alignment
 };

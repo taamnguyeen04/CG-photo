@@ -73,6 +73,13 @@ Optimization.densify_from_iter: 1000
 Optimization.densify_until_iter: 30000
 Optimization.densify_grad_threshold: 0.001
 
+# Loss Weights (Depth-Photo-SLAM)
+Optimization.lambda_geo: 0.5       # L_geo: Sensor depth L1 loss
+Optimization.lambda_smooth: 0.01   # L_smooth: Edge-aware smoothness
+Optimization.lambda_var: 0.0       # L_var: Depth variance (uncertainty)
+Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
+Optimization.lambda_align: 0.0     # L_align: Depth alpha-median alignment
+
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters
 #--------------------------------------------------------------------------------------------
