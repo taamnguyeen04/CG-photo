@@ -1,0 +1,3 @@
+pa6 lambda geo = 0.2
+pa7 lambda geo = 0.5, lambda smooth = 1
+pa8 lambda geo = 0.5

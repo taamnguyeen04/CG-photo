@@ -23,7 +23,7 @@ cd /media/tam/DATA/3D/CG-photo
     cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /media/tam/DATA/data/Replica/office0 \
-    results_pa7/office0 \
+    results_pa9/office0 \
     no_viewer
 
 # All scenes (3 runs each)
@@ -43,7 +43,7 @@ Optimization.lambda_var: 0.0
 cd /media/tam/DATA/3D/CG-photo/Photo-SLAM-eval
 source /media/tam/DATA/3D/Photo-SLAM/venv/bin/activate
 # Single scene
-python run.py ../results_pa7/office0 /media/tam/DATA/data/Replica/office0
+python run.py ../results_pa9/office0 /media/tam/DATA/data/Replica/office0
 
 # All scenes at once
 python onekey.py --results ../results_replica_pa6_v2
@@ -54,74 +54,52 @@ python ../scripts/batch_eval_photoslam_flat.py \
     --dataset_dir /media/tam/DATA/data/Replica
 ```
 
+
+echo "=== PSNR ===" && awk '{sum+=$1; count++} END {print "Mean:", sum/count}' /media/tam/DATA/3D/CG-photo/results_pa9/office0/psnr.txt && echo "=== SSIM ===" && awk '{sum+=$1; count++} END {print "Mean:", sum/count}' /media/tam/DATA/3D/CG-photo/results_pa9/office0/ssim.txt && echo "=== LPIPS ===" && awk '{sum+=$1; count++} END {print "Mean:", sum/count}' /media/tam/DATA/3D/CG-photo/results_pa9/office0/lpips.txt
+
 **Output:** `metrics.json` with PSNR, SSIM, LPIPS, ATE
 
-## Step 3: Mesh Generation
+## Step 3: Mesh Generation (cameras.json method - RECOMMENDED)
 
-Generate mesh from rendered depth using Poisson Reconstruction.
+Generate mesh from rendered depth using `cameras.json` which contains accurate camera poses from Photo-SLAM Gaussian mapper. This method ensures correct coordinate alignment.
 
-### Single Frame
-```bash
-cd /media/tam/DATA/3D/CG-photo
-source scripts/tsdf_env/bin/activate
-
-python scripts/compare_single_frame_mesh.py \
-    --frame_id 0 \
-    --result_dir results_pa7/office0 \
-    --gt_depth_dir /media/tam/DATA/data/Replica/office0/results \
-    --gt_traj /media/tam/DATA/data/Replica/office0/traj.txt \
-    --output_dir results_pa7/office0/meshes
-```
-
-### All Keyframes (Batch)
-```bash
-python scripts/batch_compare_keyframes.py \
-    --result_dir results_pa7/office0 \
-    --gt_depth_dir /media/tam/DATA/data/Replica/office0/results \
-    --gt_traj /media/tam/DATA/data/Replica/office0/traj.txt \
-    --output_dir results_pa7/office0/meshes
-```
-
-**Output:**
-- `frame{N}_rendered.ply` - Mesh từ rendered depth của Photo-SLAM
-- `frame{N}_gt.ply` - Mesh từ GT depth (để so sánh)
-
-### Full Room Mesh (TSDF Fusion)
-
-Tạo mesh cho toàn bộ căn phòng bằng cách tích hợp depth maps từ nhiều keyframes:
+### Single Scene
 
 ```bash
 cd /media/tam/DATA/3D/CG-photo
 source scripts/tsdf_env/bin/activate
 
-# Mesh từ Photo-SLAM rendered depth (dùng GT poses để align đúng trục)
-python scripts/generate_full_room_mesh.py \
-    --depth_dir results_replica_pa6_v2/replica_rgbd_0/office0/2881_shutdown/depth \
-    --traj /media/tam/DATA/data/Replica/office0/traj.txt \
-    --keyframe_traj results_replica_pa6_v2/replica_rgbd_0/office0/KeyFrameTrajectory_TUM.txt \
-    --output meshes/office0_rendered_full.ply \
-    --dataset replica \
-    --depth_pattern "*_depth.png" \
-    --frame_id_pattern keyframe \
-    --voxel_size 0.01
+# Find the shutdown directory containing cameras.json
+# Format: results_paX/scene_runY/XXXX_shutdown/ply/cameras.json
 
-# Mesh từ GT depth (để so sánh)
-python scripts/generate_full_room_mesh.py \
-    --depth_dir /media/tam/DATA/data/Replica/office0/results \
-    --traj /media/tam/DATA/data/Replica/office0/traj.txt \
-    --output meshes/office0_gt_full.ply \
-    --dataset replica \
-    --depth_pattern "depth*.png" \
-    --stride 5 \
-    --voxel_size 0.01
+python scripts/generate_mesh_from_json.py \
+    --json_path results_pa11/room0_run1/3381_shutdown/ply/cameras.json \
+    --depth_dir results_pa11/room0_run1/3381_shutdown/depth \
+    --output results_pa11/room0_run1/meshes/room0_json_aligned.ply \
+    --voxel_size 0.01 \
+    --depth_scale 6553.5 \
+    --max_depth 10.0 \
+    --gt_traj /media/tam/DATA/data/Replica/room0/traj.txt
 ```
 
-**Tham số quan trọng:**
-| Tham số | Giá trị | Ý nghĩa |
-|---------|---------|---------|
-| `--voxel_size` | 0.01 | Kích thước voxel (m), nhỏ hơn = chi tiết hơn |
-| `--stride` | 5 | Xử lý mỗi N frame (chỉ dùng cho GT depth) |
-| `--keyframe_traj` | path | Trajectory để map keyframe index → frame ID |
+### All Scenes (Batch)
+
+```bash
+./scripts/batch_generate_mesh_from_json.sh results_pa11
+```
+
+### Key Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `--json_path` | path | Path to `cameras.json` from Photo-SLAM output |
+| `--depth_dir` | path | Directory with rendered depth images |
+| `--gt_traj` | path | **IMPORTANT**: GT trajectory to transform mesh to correct coordinate system |
+| `--voxel_size` | 0.01 | TSDF voxel size (m), smaller = more detail |
+| `--depth_scale` | 6553.5 | Depth scale for Replica dataset |
+
+> **Note**: The `--gt_traj` flag is essential! Without it, mesh will be in Photo-SLAM's coordinate system (identity at frame 0) instead of GT coordinate system, causing evaluation errors ~100cm.
+
 
 ## Step 4: Geometric Evaluation (Accuracy, Completeness, Chamfer)
 
@@ -134,7 +112,7 @@ cd /media/tam/DATA/3D/CG-photo/neural_slam_eval-main
 source ../scripts/tsdf_env/bin/activate
 
 python eval_recon.py \
-    --rec_mesh ../meshes/office0_rendered_full.ply \
+    --rec_mesh ../results_pa9/office0/meshes/office0_rendered_full.ply \
     --gt_mesh /media/tam/DATA/data/Replica/cull_replica_mesh/office0.ply \
     -3d
 ```
@@ -168,8 +146,11 @@ python3 ../scripts/batch_eval_keyframes.py \
 
 | Purpose | File |
 |---------|------|
-| **Training** | `bin/replica_rgbd` or `scripts/replica_rgbd_pa6.sh` |
+| **Training** | `bin/replica_rgbd` or `scripts/run_full_pipeline.sh` |
 | **Loss Config** | `cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml` |
 | **Photometric Eval** | `Photo-SLAM-eval/run.py` |
-| **Mesh Generation** | `scripts/batch_compare_keyframes.py` |
-| **Geometric Eval** | `scripts/batch_eval_keyframes.py` + `neural_slam_eval-main/eval_recon.py` |
+| **Mesh Generation** | `scripts/generate_mesh_from_json.py` (RECOMMENDED) |
+| **Batch Mesh Gen** | `scripts/batch_generate_mesh_from_json.sh` |
+| **Geometric Eval** | `neural_slam_eval-main/eval_recon.py -3d` |
+| **Full Pipeline** | `scripts/run_full_pipeline.sh` |
+

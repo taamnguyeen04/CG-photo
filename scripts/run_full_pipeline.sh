@@ -1,0 +1,207 @@
+#!/bin/bash
+# Full pipeline: Train + Evaluate Photo-SLAM on Replica (Multiple scenes, multiple runs)
+# 
+# Usage:
+#   ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] [scene3] ...
+#
+# Examples:
+#   ./run_full_pipeline.sh pa9 3 office0                    # office0 x 3 runs
+#   ./run_full_pipeline.sh pa10 2 office0 room0 room1       # 3 scenes x 2 runs each
+#   ./run_full_pipeline.sh pa11 1 office0 office1 office2 office3 office4 room0 room1 room2  # all 8 scenes x 1 run
+
+
+# Don't use set -e, we handle errors manually
+
+# Parse arguments
+PA_NAME="${1:?Usage: ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] ...}"
+NUM_RUNS="${2:?Missing number of runs}"
+shift 2
+SCENES=("$@")
+
+if [ ${#SCENES[@]} -eq 0 ]; then
+    echo "Error: No scenes specified!"
+    echo "Usage: ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] ..."
+    exit 1
+fi
+
+# Paths
+BASE_DIR="/media/tam/DATA/3D/CG-photo"
+GT_DATA_BASE="/media/tam/DATA/data/Replica"
+GT_MESH_BASE="/media/tam/DATA/data/Replica/cull_replica_mesh"
+VENV_PATH="/media/tam/DATA/3D/Photo-SLAM/venv"
+TSDF_ENV_PATH="${BASE_DIR}/scripts/tsdf_env"
+CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml"
+
+cd "$BASE_DIR"
+
+# Extract loss weights from config
+LAMBDA_GEO=$(grep "Optimization.lambda_geo:" "$CONFIG_FILE" | awk '{print $2}')
+LAMBDA_SMOOTH=$(grep "Optimization.lambda_smooth:" "$CONFIG_FILE" | awk '{print $2}')
+LAMBDA_VAR=$(grep "Optimization.lambda_var:" "$CONFIG_FILE" | awk '{print $2}')
+LAMBDA_ISO=$(grep "Optimization.lambda_iso:" "$CONFIG_FILE" | awk '{print $2}')
+LAMBDA_ALIGN=$(grep "Optimization.lambda_align:" "$CONFIG_FILE" | awk '{print $2}')
+
+echo "=============================================="
+echo "  Full Pipeline: ${PA_NAME}"
+echo "  Scenes: ${SCENES[*]}"
+echo "  Runs per scene: ${NUM_RUNS}"
+echo "=============================================="
+echo ""
+echo "=== LOSS WEIGHTS (from config) ==="
+echo "lambda_geo:    ${LAMBDA_GEO}"
+echo "lambda_smooth: ${LAMBDA_SMOOTH}"
+echo "lambda_var:    ${LAMBDA_VAR}"
+echo "lambda_iso:    ${LAMBDA_ISO}"
+echo "lambda_align:  ${LAMBDA_ALIGN}"
+echo ""
+
+# Create results summary file
+SUMMARY_ALL="${BASE_DIR}/results_${PA_NAME}/all_results.csv"
+FAILED_LOG="${BASE_DIR}/results_${PA_NAME}/failed_runs.txt"
+mkdir -p "${BASE_DIR}/results_${PA_NAME}"
+echo "scene,run,psnr,ssim,lpips,accuracy,completion,comp_ratio" > "$SUMMARY_ALL"
+echo "# Failed runs log" > "$FAILED_LOG"
+
+# Function to run single scene
+run_single_scene() {
+    local SCENE=$1
+    local RUN=$2
+    local RESULT_DIR="${BASE_DIR}/results_${PA_NAME}/${SCENE}_run${RUN}"
+    local GT_DATA_DIR="${GT_DATA_BASE}/${SCENE}"
+    local GT_MESH="${GT_MESH_BASE}/${SCENE}.ply"
+    
+    echo ""
+    echo "======================================================"
+    echo "  Running: ${SCENE} (Run ${RUN}/${NUM_RUNS})"
+    echo "======================================================"
+    
+    # Delete existing results
+    if [ -d "$RESULT_DIR" ]; then
+        echo "[!] Deleting existing: $RESULT_DIR"
+        rm -rf "$RESULT_DIR"
+    fi
+    
+    # Step 1: Training
+    echo "--- Training ---"
+    cd "$BASE_DIR"
+    if ! ./bin/replica_rgbd \
+        ORB-SLAM3/Vocabulary/ORBvoc.txt \
+        cfg/ORB_SLAM3/RGB-D/Replica/${SCENE}.yaml \
+        cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
+        "${GT_DATA_DIR}" \
+        "results_${PA_NAME}/${SCENE}_run${RUN}" \
+        no_viewer; then
+        echo "[X] TRAINING FAILED: ${SCENE} run ${RUN}"
+        echo "${SCENE},${RUN},FAILED,training" >> "$FAILED_LOG"
+        echo "${SCENE},${RUN},FAILED,FAILED,FAILED,FAILED,FAILED,FAILED" >> "$SUMMARY_ALL"
+        return 1
+    fi
+    
+    # Step 2: Photometric Evaluation
+    echo "--- Photometric Evaluation ---"
+    cd "${BASE_DIR}/Photo-SLAM-eval"
+    source "${VENV_PATH}/bin/activate"
+    python run.py "../results_${PA_NAME}/${SCENE}_run${RUN}" "${GT_DATA_DIR}"
+    
+    # Calculate metrics
+    PSNR=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/psnr.txt")
+    SSIM=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/ssim.txt")
+    LPIPS=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/lpips.txt")
+    
+    # Step 3: Generate Mesh (using cameras.json for correct coordinate alignment)
+    echo "--- Generating Mesh ---"
+    cd "$BASE_DIR"
+    source "${TSDF_ENV_PATH}/bin/activate"
+    
+    # Find shutdown directory containing cameras.json
+    SHUTDOWN_DIR=$(ls -d ${RESULT_DIR}/*_shutdown 2>/dev/null | head -1)
+    JSON_PATH="${SHUTDOWN_DIR}/ply/cameras.json"
+    DEPTH_DIR="${SHUTDOWN_DIR}/depth"
+    GT_TRAJ="${GT_DATA_DIR}/traj.txt"
+    
+    mkdir -p "${RESULT_DIR}/meshes"
+    
+    if [ ! -f "$JSON_PATH" ]; then
+        echo "[X] ERROR: cameras.json not found: $JSON_PATH"
+        echo "${SCENE},${RUN},ERROR,cameras.json not found" >> "$FAILED_LOG"
+        return 1
+    fi
+    
+    # Generate mesh using cameras.json with GT trajectory for coordinate alignment
+    python scripts/generate_mesh_from_json.py \
+        --json_path "$JSON_PATH" \
+        --depth_dir "$DEPTH_DIR" \
+        --output "${RESULT_DIR}/meshes/${SCENE}_json_aligned.ply" \
+        --voxel_size 0.01 \
+        --depth_scale 6553.5 \
+        --max_depth 10.0 \
+        --gt_traj "$GT_TRAJ"
+    MESH_FILE="${RESULT_DIR}/meshes/${SCENE}_json_aligned.ply"
+    
+    # Step 4: Geometric Evaluation
+    echo "--- Geometric Evaluation ---"
+    cd "${BASE_DIR}/neural_slam_eval-main"
+    EVAL_OUTPUT=$(python eval_recon.py \
+        --rec_mesh "$MESH_FILE" \
+        --gt_mesh "${GT_MESH}" \
+        -3d 2>&1)
+    
+    ACC=$(echo "$EVAL_OUTPUT" | grep "accuracy:" | awk '{printf "%.4f", $2}')
+    COMP=$(echo "$EVAL_OUTPUT" | grep "completion:" | awk '{printf "%.4f", $2}')
+    COMP_RATIO=$(echo "$EVAL_OUTPUT" | grep "completion ratio:" | awk '{printf "%.2f", $3}')
+    
+    # Print summary for this run
+    echo ""
+    echo "--- ${SCENE} Run ${RUN} Results ---"
+    echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS}"
+    echo "Acc: ${ACC}cm | Comp: ${COMP}cm | Ratio: ${COMP_RATIO}%"
+    
+    # Append to CSV
+    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ACC},${COMP},${COMP_RATIO}" >> "$SUMMARY_ALL"
+    
+    # Save individual summary
+    cat > "${RESULT_DIR}/summary.txt" << EOF
+PA: ${PA_NAME}, Scene: ${SCENE}, Run: ${RUN}
+
+# Loss Weights
+lambda_geo: ${LAMBDA_GEO}
+lambda_smooth: ${LAMBDA_SMOOTH}
+lambda_var: ${LAMBDA_VAR}
+lambda_iso: ${LAMBDA_ISO}
+lambda_align: ${LAMBDA_ALIGN}
+
+# Metrics
+PSNR: ${PSNR}
+SSIM: ${SSIM}
+LPIPS: ${LPIPS}
+Accuracy: ${ACC}
+Completion: ${COMP}
+Completion_Ratio: ${COMP_RATIO}
+EOF
+}
+
+# Main loop
+TOTAL_RUNS=$((${#SCENES[@]} * NUM_RUNS))
+CURRENT=0
+
+for SCENE in "${SCENES[@]}"; do
+    for ((RUN=1; RUN<=NUM_RUNS; RUN++)); do
+        CURRENT=$((CURRENT + 1))
+        echo ""
+        echo "######################################################"
+        echo "  Progress: ${CURRENT}/${TOTAL_RUNS}"
+        echo "######################################################"
+        run_single_scene "$SCENE" "$RUN"
+    done
+done
+
+# Final Summary
+cd "$BASE_DIR"
+echo ""
+echo "=============================================="
+echo "  ALL RESULTS: ${PA_NAME}"
+echo "=============================================="
+echo ""
+cat "$SUMMARY_ALL" | column -t -s','
+echo ""
+echo "[✓] All results saved to: ${SUMMARY_ALL}"

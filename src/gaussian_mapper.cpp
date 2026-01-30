@@ -377,6 +377,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         opt_params_.lambda_iso_ = settings_file["Optimization.lambda_iso"].operator float();
     if (!settings_file["Optimization.lambda_align"].empty())
         opt_params_.lambda_align_ = settings_file["Optimization.lambda_align"].operator float();
+    if (!settings_file["Optimization.gradient_log_interval"].empty())
+        opt_params_.gradient_log_interval_ = settings_file["Optimization.gradient_log_interval"].operator int();
 
     // Viewer Parameters
     rendered_image_viewer_scale_ =
@@ -863,7 +865,7 @@ void GaussianMapper::trainForOneIteration()
     // ========================================================================
     // GRADIENT CONFLICT ANALYSIS - Log gradient directions for each loss
     // ========================================================================
-    const int gradient_log_interval = 0;  // Disabled for PA9
+    const int gradient_log_interval = opt_params_.gradient_log_interval_;  // From YAML config
     
     if (gradient_log_interval > 0 && getIteration() % gradient_log_interval == 0 && getIteration() > 0) {
         // ====== DEBUG: Check tensor properties ======
@@ -882,21 +884,23 @@ void GaussianMapper::trainForOneIteration()
         std::cout << "  depth_variance mean = " << depth_variance.mean().item<float>() << std::endl;
         std::cout << "  L_var value = " << L_var.item<float>() << std::endl;
         std::cout << "  L_geo value = " << L_geo.item<float>() << std::endl;
-        std::cout << "  L_align value = " << L_align.item<float>() << std::endl;  // RE-ENABLED for PA8 testing
+        std::cout << "  L_align value = " << L_align.item<float>() << std::endl;
+        std::cout << "  L_smooth value = " << L_smooth.item<float>() << std::endl;
         // ====== END DEBUG ======
         
         // Compute individual weighted losses
         auto loss_l1 = (1.0 - lambda_dssim) * Ll1;
         auto loss_dssim = lambda_dssim * (1.0 - loss_utils::ssim(masked_image, gt_image, device_type_));
         auto loss_geo = lambda_geo * L_geo;
-        auto loss_align = lambda_align * L_align;  // RE-ENABLED for PA8 testing
+        auto loss_align = lambda_align * L_align;
         auto loss_var = lambda_var * L_var;
+        auto loss_smooth = lambda_smooth * L_smooth;
         
         // Store gradients for xyz parameter
         std::vector<torch::Tensor> grads_xyz;
         std::vector<torch::Tensor> grads_scaling;  // For L_iso
-        std::vector<std::string> names = {"L1", "DSSIM", "L_geo", "L_align", "L_var"};
-        std::vector<torch::Tensor> losses_vec = {loss_l1, loss_dssim, loss_geo, loss_align, loss_var};
+        std::vector<std::string> names = {"L1", "DSSIM", "L_geo", "L_align", "L_var", "L_smooth"};
+        std::vector<torch::Tensor> losses_vec = {loss_l1, loss_dssim, loss_geo, loss_align, loss_var, loss_smooth};
         
         for (size_t i = 0; i < losses_vec.size(); ++i) {
             // Zero gradients
@@ -907,8 +911,10 @@ void GaussianMapper::trainForOneIteration()
                 gaussians_->scaling_.grad().zero_();
             }
             
-            // Backward for individual loss
-            losses_vec[i].backward(/*gradient=*/{}, /*retain_graph=*/true);
+            // Backward for individual loss (skip if no grad_fn, e.g., when lambda=0)
+            if (losses_vec[i].requires_grad() && losses_vec[i].grad_fn()) {
+                losses_vec[i].backward(/*gradient=*/{}, /*retain_graph=*/true);
+            }
             
             // Store xyz gradient
             if (gaussians_->xyz_.grad().defined()) {

@@ -1,0 +1,30 @@
+# ============================================================================
+# Photo-SLAM Experiment Configurations
+# ============================================================================
+# Format: PA_NAME,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z
+#
+# Loss Parameters:
+#   PHOTOMETRIC:
+#   - lambda_dssim: DSSIM (structural similarity) loss weight, default=0.2
+#
+#   GEOMETRIC:
+#   - lambda_geo: Sensor depth L1 loss weight
+#   - lambda_smooth: Edge-aware smoothness loss weight
+#   - lambda_var: Depth variance (uncertainty) loss weight
+#   - lambda_iso: Gaussian isotropy (anti-needle) loss weight
+#   - lambda_align: Depth alpha-median alignment loss weight
+#
+#   MODEL:
+#   - flatten_z: Use 2DGS (true) or 3DGS (false)
+#
+# Usage:
+#   ./scripts/run_multi_experiments.sh scripts/experiments.txt 2 office0 room0
+# ============================================================================
+
+# ===== Baseline 3DGS experiments =====
+# PA_NAME,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z
+pa13,0.2,0.5,0.0,0.0,0.0,0.0,false
+pa14,0.2,0.8,0.0,0.0,0.0,0.0,false
+pa15,0.2,1.0,0.0,0.0,0.0,0.0,false
+
+
