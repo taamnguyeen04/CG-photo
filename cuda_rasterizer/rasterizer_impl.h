@@ -53,6 +53,9 @@ namespace CudaRasterizer
 		float* out_depth;        // Alpha-blended depth
 		float* out_depth_sq;     // Depth squared for variance
 		float* out_median_depth; // Median depth at T=0.5
+		
+		// CG-SLAM: uncertainty output for L_var
+		float* out_uncertainty;  // U = Σ αᵢTᵢ(dᵢ - D_gt)²
 
 		static ImageState fromChunk(char*& chunk, size_t N);
 	};

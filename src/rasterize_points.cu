@@ -34,8 +34,9 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 }
 
 // Depth-Photo-SLAM: Updated return type to include depth outputs
+// CG-SLAM: Added gt_depth input and uncertainty output for L_var
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-           torch::Tensor, torch::Tensor, torch::Tensor>
+           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -54,7 +55,8 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& sh,
 	const int degree,
 	const torch::Tensor& campos,
-	const bool prefiltered)
+	const bool prefiltered,
+	const torch::Tensor& gt_depth)  // CG-SLAM: ground truth depth for L_var
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
     AT_ERROR("means3D must have dimensions (num_points, 3)");
@@ -75,6 +77,9 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_depth_sq = torch::zeros({H, W}, float_opts);
   torch::Tensor out_median_depth = torch::zeros({H, W}, float_opts);
   
+  // CG-SLAM: Create uncertainty output tensor for L_var
+  torch::Tensor out_uncertainty = torch::zeros({H, W}, float_opts);
+  
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
   torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
@@ -92,6 +97,9 @@ RasterizeGaussiansCUDA(
 	  {
 		M = sh.size(1);
       }
+
+	  // CG-SLAM: Get gt_depth pointer (nullptr if not provided)
+	  const float* gt_depth_ptr = (gt_depth.numel() > 0) ? gt_depth.contiguous().data_ptr<float>() : nullptr;
 
 	  rendered = CudaRasterizer::Rasterizer::forward(
 	    geomFunc,
@@ -119,11 +127,14 @@ RasterizeGaussiansCUDA(
 		out_depth.contiguous().data_ptr<float>(),
 		out_depth_sq.contiguous().data_ptr<float>(),
 		out_median_depth.contiguous().data_ptr<float>(),
+		// CG-SLAM: L_var support
+		gt_depth_ptr,
+		out_uncertainty.contiguous().data_ptr<float>(),
 		radii.contiguous().data_ptr<int>());
   }
-  // Depth-Photo-SLAM: Return 9 tensors including depth outputs
+  // CG-SLAM: Return 10 tensors including uncertainty output
   return std::make_tuple(rendered, out_color, radii, geomBuffer, binningBuffer, imgBuffer,
-                         out_depth, out_depth_sq, out_median_depth);
+                         out_depth, out_depth_sq, out_median_depth, out_uncertainty);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>

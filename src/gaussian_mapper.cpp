@@ -764,6 +764,8 @@ void GaussianMapper::trainForOneIteration()
     auto depth = std::get<4>(render_pkg);
     auto depth_sq = std::get<5>(render_pkg);
     auto median_depth = std::get<6>(render_pkg);
+    // CG-SLAM: Extract uncertainty output for L_var
+    auto uncertainty = std::get<7>(render_pkg);
 
     // Get rid of black edges caused by undistortion
     torch::Tensor masked_image = rendered_image * mask;
@@ -784,18 +786,65 @@ void GaussianMapper::trainForOneIteration()
     torch::Tensor L_var = torch::zeros(1, torch::TensorOptions().device(device_type_));
     torch::Tensor L_geo = torch::zeros(1, torch::TensorOptions().device(device_type_));
     torch::Tensor L_smooth = torch::zeros(1, torch::TensorOptions().device(device_type_));
-    
-    // Compute depth variance (needed for L_var)
-    auto depth_variance = depth_sq - depth * depth;
+    torch::Tensor L_iso = torch::zeros(1, torch::TensorOptions().device(device_type_));
     
     // L_align: Alignment loss (only if enabled)
     if (lambda_align > 0.0f) {
         L_align = loss_utils::depth_alignment_loss(depth, median_depth);
     }
     
-    // L_var: Variance loss (only if enabled)
-    if (lambda_var > 0.0f) {
-        L_var = loss_utils::uncertainty_variance_loss(depth_variance);
+    // L_var: Variance Loss - CG-SLAM Formula (only if enabled AND has GT depth)
+    // FIXED: Normalize by gt_depth² to prevent explosion when depths diverge
+    // Formula: U_normalized = (d - D)² / D²  (relative squared error)
+    if (lambda_var > 0.0f && has_gt_depth) {
+        // Create valid depth mask - also exclude very small depths to avoid division issues
+        auto depth_valid_mask = (gt_depth > RGBD_min_depth_) & (gt_depth < RGBD_max_depth_);
+        depth_valid_mask = depth_valid_mask & mask.squeeze().to(torch::kBool);
+        
+        // Squeeze tensors to [H, W]
+        auto depth_squeezed = depth.squeeze();
+        auto depth_sq_squeezed = depth_sq.squeeze();
+        
+        // DEBUG: Log depth statistics every 100 iterations to understand explosion
+        if (getIteration() % 100 == 0) {
+            // Apply mask for statistics
+            auto d_masked = depth_squeezed.masked_select(depth_valid_mask);
+            auto D_masked = gt_depth.masked_select(depth_valid_mask);
+            
+            if (d_masked.numel() > 0) {
+                float d_min = d_masked.min().item<float>();
+                float d_max = d_masked.max().item<float>();
+                float d_mean = d_masked.mean().item<float>();
+                float D_min = D_masked.min().item<float>();
+                float D_max = D_masked.max().item<float>();
+                float D_mean = D_masked.mean().item<float>();
+                
+                auto diff = (d_masked - D_masked).abs();
+                float diff_max = diff.max().item<float>();
+                float diff_mean = diff.mean().item<float>();
+                
+                std::cout << "[L_var DEBUG] iter=" << getIteration() 
+                          << " | d: min=" << d_min << " max=" << d_max << " mean=" << d_mean
+                          << " | D: min=" << D_min << " max=" << D_max << " mean=" << D_mean
+                          << " | |d-D|: max=" << diff_max << " mean=" << diff_mean
+                          << " | valid_pixels=" << d_masked.numel() << std::endl;
+            }
+        }
+        
+        // CG-SLAM L_var: Use relative L1 depth error (NO CLAMP)
+        // L_var = mean(|d - D| / D)
+        auto depth_error = (depth_squeezed - gt_depth).abs();
+        auto relative_error = depth_error / gt_depth.clamp_min(0.1f);  // Only clamp denominator to avoid div by 0
+        
+        // Apply mask and compute mean (NO CLAMP on relative_error)
+        auto masked_error = relative_error * depth_valid_mask.to(relative_error.dtype());
+        auto num_valid = depth_valid_mask.sum().clamp_min(1.0f);
+        L_var = masked_error.sum() / num_valid;
+    }
+    
+    // L_iso: Isotropy Loss (only if enabled) - prevents needle-like Gaussians
+    if (lambda_iso > 0.0f) {
+        L_iso = loss_utils::isotropy_loss(gaussians_->scaling_, /*epsilon=*/1.5f, /*use_log_scales=*/true);
     }
     
     // L_geo: Geometric sensor depth loss (only if enabled AND has GT depth)
@@ -828,8 +877,8 @@ void GaussianMapper::trainForOneIteration()
                 + lambda_geo * L_geo
                 + lambda_align * L_align
                 + lambda_var * L_var
-                + lambda_smooth * L_smooth;
-                // + lambda_iso * L_iso;  // TODO: Add isotropy loss when needed
+                + lambda_smooth * L_smooth
+                + lambda_iso * L_iso;
     
     // ========================================================================
     // LOSS COMPONENT LOGGING - Log individual loss values for visualization
@@ -841,7 +890,7 @@ void GaussianMapper::trainForOneIteration()
     if (loss_log_interval > 0 && !loss_log_initialized && getIteration() == 1) {
         auto loss_log_path = result_dir_ / "loss_components.csv";
         loss_log_file.open(loss_log_path);
-        loss_log_file << "iteration,L1,DSSIM,L_geo,L_var,L_smooth,total" << std::endl;
+        loss_log_file << "iteration,L1,DSSIM,L_geo,L_var,L_smooth,L_iso,total" << std::endl;
         loss_log_initialized = true;
     }
     
@@ -852,12 +901,14 @@ void GaussianMapper::trainForOneIteration()
         float geo_val = L_geo.item<float>();
         float var_val = L_var.item<float>();
         float smooth_val = L_smooth.item<float>();
+        float iso_val = L_iso.item<float>();
         float total_val = loss.item<float>();
         
         if (loss_log_file.is_open()) {
             loss_log_file << getIteration() << "," 
                          << l1_val << "," << dssim_val << "," 
                          << geo_val << "," << var_val << "," << smooth_val << ","
+                         << iso_val << ","
                          << total_val << std::endl;
         }
     }
@@ -873,7 +924,6 @@ void GaussianMapper::trainForOneIteration()
         std::cout << "  depth.requires_grad = " << (depth.requires_grad() ? "true" : "false") << std::endl;
         std::cout << "  depth_sq.requires_grad = " << (depth_sq.requires_grad() ? "true" : "false") << std::endl;
         std::cout << "  median_depth.requires_grad = " << (median_depth.requires_grad() ? "true" : "false") << std::endl;
-        std::cout << "  depth_variance.requires_grad = " << (depth_variance.requires_grad() ? "true" : "false") << std::endl;
         std::cout << "  gaussians_->xyz_.requires_grad = " << (gaussians_->xyz_.requires_grad() ? "true" : "false") << std::endl;
         std::cout << "  gaussians_->scaling_.requires_grad = " << (gaussians_->scaling_.requires_grad() ? "true" : "false") << std::endl;
         
@@ -881,11 +931,11 @@ void GaussianMapper::trainForOneIteration()
         std::cout << "[DEBUG] Tensor values:" << std::endl;
         std::cout << "  depth mean = " << depth.mean().item<float>() << std::endl;
         std::cout << "  depth_sq mean = " << depth_sq.mean().item<float>() << std::endl;
-        std::cout << "  depth_variance mean = " << depth_variance.mean().item<float>() << std::endl;
         std::cout << "  L_var value = " << L_var.item<float>() << std::endl;
         std::cout << "  L_geo value = " << L_geo.item<float>() << std::endl;
         std::cout << "  L_align value = " << L_align.item<float>() << std::endl;
         std::cout << "  L_smooth value = " << L_smooth.item<float>() << std::endl;
+        std::cout << "  L_iso value = " << L_iso.item<float>() << std::endl;
         // ====== END DEBUG ======
         
         // Compute individual weighted losses
@@ -895,12 +945,13 @@ void GaussianMapper::trainForOneIteration()
         auto loss_align = lambda_align * L_align;
         auto loss_var = lambda_var * L_var;
         auto loss_smooth = lambda_smooth * L_smooth;
+        auto loss_iso = lambda_iso * L_iso;
         
         // Store gradients for xyz parameter
         std::vector<torch::Tensor> grads_xyz;
         std::vector<torch::Tensor> grads_scaling;  // For L_iso
-        std::vector<std::string> names = {"L1", "DSSIM", "L_geo", "L_align", "L_var", "L_smooth"};
-        std::vector<torch::Tensor> losses_vec = {loss_l1, loss_dssim, loss_geo, loss_align, loss_var, loss_smooth};
+        std::vector<std::string> names = {"L1", "DSSIM", "L_geo", "L_align", "L_var", "L_smooth", "L_iso"};
+        std::vector<torch::Tensor> losses_vec = {loss_l1, loss_dssim, loss_geo, loss_align, loss_var, loss_smooth, loss_iso};
         
         for (size_t i = 0; i < losses_vec.size(); ++i) {
             // Zero gradients
@@ -1037,8 +1088,9 @@ void GaussianMapper::trainForOneIteration()
                 torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
             
             // Simple heuristic: use variance of depth at visible pixels
-            // depth_variance is per-pixel, we aggregate to per-Gaussian
-            auto depth_var_mean = depth_variance.mean();
+            // Compute depth_variance = E[d²] - E[d]² for pruning heuristic
+            auto depth_variance_for_prune = depth_sq - depth * depth;
+            auto depth_var_mean = depth_variance_for_prune.mean();
             per_gaussian_uncertainty.fill_(depth_var_mean.item<float>());
             
             // Update Gaussian uncertainties with EMA
@@ -1887,9 +1939,9 @@ cv::Mat GaussianMapper::renderFromPose(
         throw std::runtime_error("[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
     }
 
-    // Depth-Photo-SLAM: Updated to match 7-element return type
+    // CG-SLAM: Updated to match 8-element return type (includes uncertainty)
     std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor,
-               at::Tensor, at::Tensor, at::Tensor> render_pkg;
+               at::Tensor, at::Tensor, at::Tensor, at::Tensor> render_pkg;
     {
         std::unique_lock<std::mutex> lock_render(mutex_render_);
         // Render

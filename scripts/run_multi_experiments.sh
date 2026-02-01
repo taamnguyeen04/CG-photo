@@ -9,7 +9,7 @@
 #   ./run_multi_experiments.sh <experiments_file> <num_runs> <scene1> [scene2] ...
 #
 # Examples:
-#   ./run_multi_experiments.sh experiments/example_experiments.txt 2 office0 room0
+#   ./run_multi_experiments.sh experiments/example_experiments.txt 1 office0 room0
 #   ./run_multi_experiments.sh experiments/example_experiments.txt 1 office0 office1 office2 office3 office4 room0 room1 room2
 #
 # experiments_file format (CSV):
@@ -37,6 +37,9 @@ if [ ! -f "$EXPERIMENTS_FILE" ]; then
     echo "Error: Experiments file not found: $EXPERIMENTS_FILE"
     exit 1
 fi
+
+# Convert experiments file to absolute path before cd
+EXPERIMENTS_FILE="$(realpath "$EXPERIMENTS_FILE")"
 
 # Paths
 BASE_DIR="/media/tam/DATA/3D/CG-photo"

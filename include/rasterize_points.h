@@ -16,10 +16,11 @@
 #include <string>
 	
 // Depth-Photo-SLAM: Updated return type to include depth outputs
+// CG-SLAM: Added gt_depth input and uncertainty output for L_var
 // Returns: (rendered_count, out_color, radii, geomBuffer, binningBuffer, imgBuffer,
-//           out_depth, out_depth_sq, out_median_depth)
+//           out_depth, out_depth_sq, out_median_depth, out_uncertainty)
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-           torch::Tensor, torch::Tensor, torch::Tensor>
+           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -38,7 +39,8 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& sh,
 	const int degree,
 	const torch::Tensor& campos,
-	const bool prefiltered);
+	const bool prefiltered,
+	const torch::Tensor& gt_depth);  // CG-SLAM: ground truth depth for L_var
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(

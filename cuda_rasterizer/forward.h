@@ -49,6 +49,7 @@ namespace FORWARD
 
 	// Main rasterization method.
 	// Depth-Photo-SLAM: Added depth output buffers
+	// CG-SLAM: Added gt_depth input and uncertainty output for L_var
 	void render(
 		const dim3 grid, dim3 block,
 		const uint2* ranges,
@@ -64,7 +65,9 @@ namespace FORWARD
 		float* out_color,
 		float* out_depth,                 // Depth-Photo-SLAM: output alpha-blended depth
 		float* out_depth_sq,              // Depth-Photo-SLAM: output depth^2 for variance
-		float* out_median_depth);         // Depth-Photo-SLAM: output median depth (at T=0.5)
+		float* out_median_depth,          // Depth-Photo-SLAM: output median depth (at T=0.5)
+		const float* gt_depth,            // CG-SLAM: ground truth depth for L_var [H, W]
+		float* out_uncertainty);          // CG-SLAM: uncertainty map U = Σ αᵢTᵢ(dᵢ-D)²
 }
 
 

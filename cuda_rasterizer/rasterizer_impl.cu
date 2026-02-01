@@ -179,6 +179,8 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	obtain(chunk, img.out_depth, N, 128);
 	obtain(chunk, img.out_depth_sq, N, 128);
 	obtain(chunk, img.out_median_depth, N, 128);
+	// CG-SLAM: allocate uncertainty output buffer for L_var
+	obtain(chunk, img.out_uncertainty, N, 128);
 	return img;
 }
 
@@ -199,6 +201,7 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 
 // Forward rendering procedure for differentiable rasterization
 // of Gaussians.
+// CG-SLAM: Added gt_depth input and out_uncertainty output for L_var
 int CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> geometryBuffer,
 	std::function<char* (size_t)> binningBuffer,
@@ -224,6 +227,9 @@ int CudaRasterizer::Rasterizer::forward(
 	float* out_depth,
 	float* out_depth_sq,
 	float* out_median_depth,
+	// CG-SLAM: L_var support
+	const float* gt_depth,
+	float* out_uncertainty,
 	int* radii)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
@@ -328,6 +334,7 @@ int CudaRasterizer::Rasterizer::forward(
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	// Depth-Photo-SLAM: Pass depth buffers to render
+	// CG-SLAM: Pass gt_depth and uncertainty buffers for L_var
 	FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
@@ -343,7 +350,9 @@ int CudaRasterizer::Rasterizer::forward(
 		out_color,
 		imgState.out_depth,         // Depth-Photo-SLAM: output alpha-blended depth
 		imgState.out_depth_sq,      // Depth-Photo-SLAM: output depth^2
-		imgState.out_median_depth); // Depth-Photo-SLAM: output median depth
+		imgState.out_median_depth,  // Depth-Photo-SLAM: output median depth
+		gt_depth,                   // CG-SLAM: ground truth depth for L_var
+		imgState.out_uncertainty);  // CG-SLAM: uncertainty output U = Σαᵢtᵢ(dᵢ-D)²
 
 	// Depth-Photo-SLAM: Copy depth outputs from imgState to user-provided buffers
 	const size_t img_size = width * height * sizeof(float);
@@ -355,6 +364,10 @@ int CudaRasterizer::Rasterizer::forward(
 	}
 	if (out_median_depth != nullptr) {
 		cudaMemcpy(out_median_depth, imgState.out_median_depth, img_size, cudaMemcpyDeviceToDevice);
+	}
+	// CG-SLAM: Copy uncertainty output for L_var
+	if (out_uncertainty != nullptr) {
+		cudaMemcpy(out_uncertainty, imgState.out_uncertainty, img_size, cudaMemcpyDeviceToDevice);
 	}
 
 	return num_rendered;

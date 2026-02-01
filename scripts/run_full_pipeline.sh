@@ -55,12 +55,16 @@ echo "lambda_iso:    ${LAMBDA_ISO}"
 echo "lambda_align:  ${LAMBDA_ALIGN}"
 echo ""
 
-# Create results summary file
+# Create results summary file (append mode - only add header if file doesn't exist)
 SUMMARY_ALL="${BASE_DIR}/results_${PA_NAME}/all_results.csv"
 FAILED_LOG="${BASE_DIR}/results_${PA_NAME}/failed_runs.txt"
 mkdir -p "${BASE_DIR}/results_${PA_NAME}"
-echo "scene,run,psnr,ssim,lpips,accuracy,completion,comp_ratio" > "$SUMMARY_ALL"
-echo "# Failed runs log" > "$FAILED_LOG"
+
+# Only write header if CSV doesn't exist or is empty
+if [ ! -f "$SUMMARY_ALL" ] || [ ! -s "$SUMMARY_ALL" ]; then
+    echo "scene,run,psnr,ssim,lpips,accuracy,completion,comp_ratio,chamfer" > "$SUMMARY_ALL"
+fi
+echo "# Failed runs log - $(date)" >> "$FAILED_LOG"
 
 # Function to run single scene
 run_single_scene() {
@@ -149,15 +153,16 @@ run_single_scene() {
     ACC=$(echo "$EVAL_OUTPUT" | grep "accuracy:" | awk '{printf "%.4f", $2}')
     COMP=$(echo "$EVAL_OUTPUT" | grep "completion:" | awk '{printf "%.4f", $2}')
     COMP_RATIO=$(echo "$EVAL_OUTPUT" | grep "completion ratio:" | awk '{printf "%.2f", $3}')
+    CHAMFER=$(echo "$EVAL_OUTPUT" | grep "chamfer:" | awk '{printf "%.4f", $2}')
     
     # Print summary for this run
     echo ""
     echo "--- ${SCENE} Run ${RUN} Results ---"
     echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS}"
-    echo "Acc: ${ACC}cm | Comp: ${COMP}cm | Ratio: ${COMP_RATIO}%"
+    echo "Acc: ${ACC}cm | Comp: ${COMP}cm | Chamfer: ${CHAMFER}cm | Ratio: ${COMP_RATIO}%"
     
     # Append to CSV
-    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ACC},${COMP},${COMP_RATIO}" >> "$SUMMARY_ALL"
+    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ACC},${COMP},${COMP_RATIO},${CHAMFER}" >> "$SUMMARY_ALL"
     
     # Save individual summary
     cat > "${RESULT_DIR}/summary.txt" << EOF
@@ -177,6 +182,7 @@ LPIPS: ${LPIPS}
 Accuracy: ${ACC}
 Completion: ${COMP}
 Completion_Ratio: ${COMP_RATIO}
+Chamfer: ${CHAMFER}
 EOF
 }
 

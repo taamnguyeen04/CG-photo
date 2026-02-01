@@ -55,6 +55,9 @@ namespace CudaRasterizer
 			float* out_depth = nullptr,
 			float* out_depth_sq = nullptr,
 			float* out_median_depth = nullptr,
+			// CG-SLAM: L_var support
+			const float* gt_depth = nullptr,
+			float* out_uncertainty = nullptr,
 			int* radii = nullptr);
 
 		// Original backward (color only)

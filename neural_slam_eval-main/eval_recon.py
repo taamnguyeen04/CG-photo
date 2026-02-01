@@ -49,6 +49,18 @@ def completion(gt_points, rec_points):
     return comp
 
 
+def chamfer_distance(gt_points, rec_points):
+    """
+    Compute symmetric Chamfer Distance.
+    Chamfer = Accuracy + Completion (sum, not average!)
+    
+    CD(A, B) = (1/|A|) * Σ d(a, B) + (1/|B|) * Σ d(b, A)
+    """
+    acc = accuracy(gt_points, rec_points)
+    comp = completion(gt_points, rec_points)
+    return acc + comp
+
+
 def get_align_transformation(rec_meshfile, gt_meshfile):
     """
     Get the transformation matrix to align the reconstructed mesh to the ground truth mesh.
@@ -114,11 +126,13 @@ def calc_3d_mesh_metric(mesh_rec, mesh_gt, align=False):
     completion_rec = completion(gt_pc_tri.vertices, rec_pc_tri.vertices)
     completion_ratio_rec = completion_ratio(
         gt_pc_tri.vertices, rec_pc_tri.vertices)
+    chamfer_rec = chamfer_distance(gt_pc_tri.vertices, rec_pc_tri.vertices)
     accuracy_rec *= 100  # convert to cm
     completion_rec *= 100  # convert to cm
     completion_ratio_rec *= 100  # convert to %
+    chamfer_rec *= 100  # convert to cm
 
-    return {'acc': accuracy_rec, 'comp': completion_rec, 'comp%': completion_ratio_rec}
+    return {'acc': accuracy_rec, 'comp': completion_rec, 'comp%': completion_ratio_rec, 'chamfer': chamfer_rec}
 
 
 def calc_3d_metric(rec_meshfile, gt_meshfile, align=True):
@@ -142,17 +156,21 @@ def calc_3d_metric(rec_meshfile, gt_meshfile, align=True):
     completion_rec = completion(gt_pc_tri.vertices, rec_pc_tri.vertices)
     completion_ratio_rec = completion_ratio(
         gt_pc_tri.vertices, rec_pc_tri.vertices)
+    chamfer_rec = chamfer_distance(gt_pc_tri.vertices, rec_pc_tri.vertices)
     accuracy_rec *= 100  # convert to cm
     completion_rec *= 100  # convert to cm
     completion_ratio_rec *= 100  # convert to %
+    chamfer_rec *= 100  # convert to cm
     print('accuracy: ', accuracy_rec)
     print('completion: ', completion_rec)
     print('completion ratio: ', completion_ratio_rec)
+    print('chamfer: ', chamfer_rec)
 
     return{
         'acc': accuracy_rec,
         'comp': completion_rec,
-        'comp ratio': completion_ratio_rec
+        'comp ratio': completion_ratio_rec,
+        'chamfer': chamfer_rec
     }
 
 

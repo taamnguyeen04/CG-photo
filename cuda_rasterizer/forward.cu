@@ -259,6 +259,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
 // Depth-Photo-SLAM: Extended kernel with depth output
+// CG-SLAM: Added gt_depth input and uncertainty output for L_var
 template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
@@ -275,7 +276,9 @@ renderCUDA(
 	float* __restrict__ out_color,
 	float* __restrict__ out_depth,              // Depth-Photo-SLAM: alpha-blended depth
 	float* __restrict__ out_depth_sq,           // Depth-Photo-SLAM: depth^2 for variance
-	float* __restrict__ out_median_depth)       // Depth-Photo-SLAM: median depth at T=0.5
+	float* __restrict__ out_median_depth,       // Depth-Photo-SLAM: median depth at T=0.5
+	const float* __restrict__ gt_depth,         // CG-SLAM: ground truth depth [H, W] (can be nullptr)
+	float* __restrict__ out_uncertainty)        // CG-SLAM: uncertainty U = Σ αᵢTᵢ(dᵢ-D)² (can be nullptr)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -313,6 +316,11 @@ renderCUDA(
 	float D_sq = 0.0f;        // Alpha-blended depth squared: E[d^2]
 	float D_median = 0.0f;    // Median depth (depth at T=0.5)
 	bool median_found = false;
+	
+	// CG-SLAM: Initialize uncertainty accumulator for L_var
+	float U = 0.0f;           // Uncertainty: U = Σ αᵢTᵢ(dᵢ - D_gt)²
+	// Load ground truth depth for this pixel (if available)
+	float gt_d = (gt_depth != nullptr && inside) ? gt_depth[pix_id] : 0.0f;
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -374,6 +382,13 @@ renderCUDA(
 			D += gaussian_depth * weight;
 			D_sq += gaussian_depth * gaussian_depth * weight;
 			
+			// CG-SLAM: Accumulate uncertainty for L_var
+			// U = Σ αᵢTᵢ(dᵢ - D_gt)² where D_gt = ground truth depth
+			if (gt_depth != nullptr) {
+				float depth_diff = gaussian_depth - gt_d;
+				U += depth_diff * depth_diff * weight;
+			}
+			
 			// Depth-Photo-SLAM: Track median depth (depth when T first drops below 0.5)
 			// Median = depth at which cumulative transmittance T reaches 0.5
 			if (!median_found && T > 0.5f && test_T <= 0.5f) {
@@ -403,10 +418,16 @@ renderCUDA(
 		out_depth_sq[pix_id] = D_sq;
 		// If median not found (T never dropped below 0.5), use alpha-blended depth
 		out_median_depth[pix_id] = median_found ? D_median : D;
+
+		// CG-SLAM: Write uncertainty output
+		if (out_uncertainty != nullptr) {
+			out_uncertainty[pix_id] = U;
+		}
 	}
 }
 
 // Depth-Photo-SLAM: Extended render function with depth outputs
+// CG-SLAM: Added gt_depth input and uncertainty output for L_var
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
@@ -422,7 +443,9 @@ void FORWARD::render(
 	float* out_color,
 	float* out_depth,
 	float* out_depth_sq,
-	float* out_median_depth)
+	float* out_median_depth,
+	const float* gt_depth,
+	float* out_uncertainty)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -438,7 +461,9 @@ void FORWARD::render(
 		out_color,
 		out_depth,
 		out_depth_sq,
-		out_median_depth);
+		out_median_depth,
+		gt_depth,
+		out_uncertainty);
 }
 
 void FORWARD::preprocess(int P, int D, int M,

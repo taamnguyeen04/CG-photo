@@ -50,6 +50,8 @@ GaussianRasterizerFunction::forward(
     // bool prefiltered)
 {
     // Invoke C++/CUDA rasterizer
+    // CG-SLAM: Pass empty gt_depth tensor (L_var handled in gaussian_mapper.cpp)
+    torch::Tensor empty_gt_depth = torch::Tensor();
     auto rasterization_result = RasterizeGaussiansCUDA(
         raster_settings.bg_,
         means3D,
@@ -68,7 +70,8 @@ GaussianRasterizerFunction::forward(
         sh,
         raster_settings.sh_degree_,
         raster_settings.campos_,
-        raster_settings.prefiltered_
+        raster_settings.prefiltered_,
+        empty_gt_depth  // CG-SLAM: gt_depth for L_var (empty here, handled separately)
     );
 
     auto num_rendered = std::get<0>(rasterization_result);
@@ -81,6 +84,8 @@ GaussianRasterizerFunction::forward(
     auto out_depth = std::get<6>(rasterization_result);
     auto out_depth_sq = std::get<7>(rasterization_result);
     auto out_median_depth = std::get<8>(rasterization_result);
+    // CG-SLAM: Extract uncertainty output for L_var
+    auto out_uncertainty = std::get<9>(rasterization_result);
     // Note: depth tensors are currently not saved for backward pass
     // They can be used directly in the training loop for computing loss
 
@@ -104,9 +109,9 @@ GaussianRasterizerFunction::forward(
                             geomBuffer,
                             binningBuffer,
                             imgBuffer});
-    // Depth-Photo-SLAM: Return 5 tensors including depth outputs
-    // Note: backward pass doesn't compute gradients for depth (not needed for loss)
-    return {color, radii, out_depth, out_depth_sq, out_median_depth};
+    // CG-SLAM: Return 6 tensors including uncertainty output
+    // Note: backward pass doesn't compute gradients for depth/uncertainty (not needed for loss - computed separately)
+    return {color, radii, out_depth, out_depth_sq, out_median_depth, out_uncertainty};
 }
 
 torch::autograd::tensor_list
@@ -139,8 +144,7 @@ GaussianRasterizerFunction::backward(
     auto imgBuffer = saved[13];
 
     // Depth-Photo-SLAM: Get depth gradients from grad_outputs
-    // grad_outputs[0] = grad_color, grad_outputs[1] = grad_radii (unused)
-    // grad_outputs[2] = grad_depth, grad_outputs[3] = grad_depth_sq, grad_outputs[4] = grad_median_depth
+    // CG-SLAM: Now with 6 outputs: grad_color, grad_radii (unused), grad_depth, grad_depth_sq, grad_median_depth, grad_uncertainty
     auto grad_out_color = grad_outputs[0];
     
     // Get depth gradients (may be empty if no depth loss)
@@ -229,8 +233,8 @@ GaussianRasterizerFunction::backward(
         torch::Tensor()
     };
 }
-// Depth-Photo-SLAM: Updated to return 5 tensors including depth outputs
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+// CG-SLAM: Updated to return 6 tensors including uncertainty output
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 GaussianRasterizer::forward(
     torch::Tensor means3D,
     torch::Tensor means2D,
@@ -280,7 +284,8 @@ GaussianRasterizer::forward(
         cov3D_precomp,
         raster_settings
     );
-    // Depth-Photo-SLAM: Return 5 tensors (color, radii, depth, depth_sq, median_depth)
+    // CG-SLAM: Return 6 tensors (color, radii, depth, depth_sq, median_depth, uncertainty)
     return std::make_tuple(result[0]/*color*/, result[1]/*radii*/,
-                           result[2]/*depth*/, result[3]/*depth_sq*/, result[4]/*median_depth*/);
+                           result[2]/*depth*/, result[3]/*depth_sq*/, result[4]/*median_depth*/,
+                           result[5]/*uncertainty*/);
 }

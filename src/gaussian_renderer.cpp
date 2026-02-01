@@ -16,12 +16,12 @@
 #include "include/gaussian_renderer.h"
 
 /**
- * @brief Depth-Photo-SLAM: Render with depth outputs
+ * @brief CG-SLAM: Render with depth and uncertainty outputs
  * 
- * @return std::tuple<render, viewspace_points, visibility_filter, radii, depth, depth_sq, median_depth>
+ * @return std::tuple<render, viewspace_points, visibility_filter, radii, depth, depth_sq, median_depth, uncertainty>
  */
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-           torch::Tensor, torch::Tensor, torch::Tensor>
+           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 GaussianRenderer::render(
     std::shared_ptr<GaussianKeyframe> viewpoint_camera,
     int image_height,
@@ -141,11 +141,13 @@ GaussianRenderer::render(
     auto depth = std::get<2>(rasterizer_result);
     auto depth_sq = std::get<3>(rasterizer_result);
     auto median_depth = std::get<4>(rasterizer_result);
+    // CG-SLAM: Extract uncertainty output
+    auto uncertainty = std::get<5>(rasterizer_result);
 
     /* Those Gaussians that were frustum culled or had a radius of 0 were not visible.
        They will be excluded from value updates used in the splitting criteria.
      */
-    // Depth-Photo-SLAM: Return 7 tensors including depth outputs
+    // CG-SLAM: Return 8 tensors including uncertainty output
     return std::make_tuple(
         rendered_image,     /*render*/
         screenspace_points, /*viewspace_points*/
@@ -153,6 +155,7 @@ GaussianRenderer::render(
         radii,              /*radii*/
         depth,              /*depth*/
         depth_sq,           /*depth_sq*/
-        median_depth        /*median_depth*/
+        median_depth,       /*median_depth*/
+        uncertainty         /*uncertainty - CG-SLAM*/
     );
 }
