@@ -1,26 +1,41 @@
 #!/bin/bash
-# Full pipeline: Train + Evaluate Photo-SLAM on Replica (Multiple scenes, multiple runs)
-# 
+# ============================================================================
+# Full Pipeline: Train + Evaluate Photo-SLAM / UncertPhoto-SLAM on Replica
+# ============================================================================
+#
 # Usage:
-#   ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] [scene3] ...
+#   ./run_full_pipeline.sh <pa_name> <num_runs> [--uncer] <scene1> [scene2] ...
 #
 # Examples:
-#   ./run_full_pipeline.sh pa9 3 office0                    # office0 x 3 runs
-#   ./run_full_pipeline.sh pa10 2 office0 room0 room1       # 3 scenes x 2 runs each
-#   ./run_full_pipeline.sh pa11 1 office0 office1 office2 office3 office4 room0 room1 room2  # all 8 scenes x 1 run
+#   ./run_full_pipeline.sh pa9 3 office0                       # office0 x 3 runs (no uncertainty)
+#   ./run_full_pipeline.sh pa10 2 office0 room0 room1          # 3 scenes x 2 runs (no uncertainty)
+#   ./run_full_pipeline.sh pa11_uncer 1 --uncer office0        # with uncertainty tracking enabled
+#   ./run_full_pipeline.sh geo07_uncer 1 --uncer office0 room0 # uncertainty on 2 scenes
+#
+# Options:
+#   --uncer : Enable UncertPhoto-SLAM uncertainty tracking and pruning
+# ============================================================================
 
 
 # Don't use set -e, we handle errors manually
 
 # Parse arguments
-PA_NAME="${1:?Usage: ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] ...}"
+PA_NAME="${1:?Usage: ./run_full_pipeline.sh <pa_name> <num_runs> [--uncer] <scene1> [scene2] ...}"
 NUM_RUNS="${2:?Missing number of runs}"
 shift 2
+
+# Check for --uncer flag
+ENABLE_UNCER=false
+if [ "$1" == "--uncer" ]; then
+    ENABLE_UNCER=true
+    shift
+fi
+
 SCENES=("$@")
 
 if [ ${#SCENES[@]} -eq 0 ]; then
     echo "Error: No scenes specified!"
-    echo "Usage: ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] ..."
+    echo "Usage: ./run_full_pipeline.sh <pa_name> <num_runs> [--uncer] <scene1> [scene2] ..."
     exit 1
 fi
 
@@ -30,7 +45,14 @@ GT_DATA_BASE="/media/tam/DATA/data/Replica"
 GT_MESH_BASE="/media/tam/DATA/data/Replica/cull_replica_mesh"
 VENV_PATH="/media/tam/DATA/3D/Photo-SLAM/venv"
 TSDF_ENV_PATH="${BASE_DIR}/scripts/tsdf_env"
-CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml"
+
+# Config selection based on uncertainty flag
+if [ "$ENABLE_UNCER" = true ]; then
+    CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd_uncertainty.yaml"
+    echo "[UncertPhoto-SLAM] Uncertainty tracking ENABLED"
+else
+    CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml"
+fi
 
 cd "$BASE_DIR"
 
@@ -41,10 +63,17 @@ LAMBDA_VAR=$(grep "Optimization.lambda_var:" "$CONFIG_FILE" | awk '{print $2}')
 LAMBDA_ISO=$(grep "Optimization.lambda_iso:" "$CONFIG_FILE" | awk '{print $2}')
 LAMBDA_ALIGN=$(grep "Optimization.lambda_align:" "$CONFIG_FILE" | awk '{print $2}')
 
+# Extract uncertainty config if enabled
+if [ "$ENABLE_UNCER" = true ]; then
+    UNCER_THRESHOLD=$(grep "Uncertainty.threshold:" "$CONFIG_FILE" | awk '{print $2}')
+    UNCER_TAU_OBS=$(grep "Uncertainty.tau_obs:" "$CONFIG_FILE" | awk '{print $2}')
+fi
+
 echo "=============================================="
 echo "  Full Pipeline: ${PA_NAME}"
 echo "  Scenes: ${SCENES[*]}"
 echo "  Runs per scene: ${NUM_RUNS}"
+echo "  Uncertainty: ${ENABLE_UNCER}"
 echo "=============================================="
 echo ""
 echo "=== LOSS WEIGHTS (from config) ==="
@@ -53,6 +82,12 @@ echo "lambda_smooth: ${LAMBDA_SMOOTH}"
 echo "lambda_var:    ${LAMBDA_VAR}"
 echo "lambda_iso:    ${LAMBDA_ISO}"
 echo "lambda_align:  ${LAMBDA_ALIGN}"
+if [ "$ENABLE_UNCER" = true ]; then
+    echo ""
+    echo "=== UNCERTAINTY CONFIG ==="
+    echo "threshold:     ${UNCER_THRESHOLD}"
+    echo "tau_obs:       ${UNCER_TAU_OBS}"
+fi
 echo ""
 
 # Create results summary file (append mode - only add header if file doesn't exist)
@@ -62,7 +97,11 @@ mkdir -p "${BASE_DIR}/results_${PA_NAME}"
 
 # Only write header if CSV doesn't exist or is empty
 if [ ! -f "$SUMMARY_ALL" ] || [ ! -s "$SUMMARY_ALL" ]; then
-    echo "scene,run,psnr,ssim,lpips,accuracy,completion,comp_ratio,chamfer" > "$SUMMARY_ALL"
+    if [ "$ENABLE_UNCER" = true ]; then
+        echo "scene,run,psnr,ssim,lpips,ate_rmse,accuracy,completion,comp_ratio,chamfer,gauss_init,gauss_final,gauss_pruned" > "$SUMMARY_ALL"
+    else
+        echo "scene,run,psnr,ssim,lpips,ate_rmse,accuracy,completion,comp_ratio,chamfer" > "$SUMMARY_ALL"
+    fi
 fi
 echo "# Failed runs log - $(date)" >> "$FAILED_LOG"
 
@@ -77,6 +116,9 @@ run_single_scene() {
     echo ""
     echo "======================================================"
     echo "  Running: ${SCENE} (Run ${RUN}/${NUM_RUNS})"
+    if [ "$ENABLE_UNCER" = true ]; then
+        echo "  [UncertPhoto-SLAM Mode]"
+    fi
     echo "======================================================"
     
     # Delete existing results
@@ -91,7 +133,7 @@ run_single_scene() {
     if ! ./bin/replica_rgbd \
         ORB-SLAM3/Vocabulary/ORBvoc.txt \
         cfg/ORB_SLAM3/RGB-D/Replica/${SCENE}.yaml \
-        cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
+        "$CONFIG_FILE" \
         "${GT_DATA_DIR}" \
         "results_${PA_NAME}/${SCENE}_run${RUN}" \
         no_viewer; then
@@ -99,6 +141,23 @@ run_single_scene() {
         echo "${SCENE},${RUN},FAILED,training" >> "$FAILED_LOG"
         echo "${SCENE},${RUN},FAILED,FAILED,FAILED,FAILED,FAILED,FAILED" >> "$SUMMARY_ALL"
         return 1
+    fi
+    
+    # Log uncertainty pruning stats if enabled
+    INITIAL_GAUSS=""
+    FINAL_GAUSS=""
+    TOTAL_PRUNED=""
+    if [ "$ENABLE_UNCER" = true ]; then
+        PRUNE_LOG="${RESULT_DIR}/uncertainty_pruning.csv"
+        if [ -f "$PRUNE_LOG" ]; then
+            echo "--- Uncertainty Pruning Summary ---"
+            INITIAL_GAUSS=$(head -2 "$PRUNE_LOG" | tail -1 | cut -d',' -f2)
+            FINAL_GAUSS=$(tail -1 "$PRUNE_LOG" | cut -d',' -f3)
+            TOTAL_PRUNED=$(awk -F',' 'NR>1 {sum+=$4} END {print sum}' "$PRUNE_LOG")
+            echo "Initial Gaussians: ${INITIAL_GAUSS}"
+            echo "Final Gaussians: ${FINAL_GAUSS}"
+            echo "Total pruned: ${TOTAL_PRUNED}"
+        fi
     fi
     
     # Step 2: Photometric Evaluation
@@ -111,6 +170,12 @@ run_single_scene() {
     PSNR=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/psnr.txt")
     SSIM=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/ssim.txt")
     LPIPS=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/lpips.txt")
+    
+    # Extract ATE RMSE from metrics_traj.txt (trajectory error in meters)
+    ATE_RMSE="N/A"
+    if [ -f "${RESULT_DIR}/metrics_traj.txt" ]; then
+        ATE_RMSE=$(grep -m1 "rmse" "${RESULT_DIR}/metrics_traj.txt" | awk '{printf "%.6f", $2}')
+    fi
     
     # Step 3: Generate Mesh (using cameras.json for correct coordinate alignment)
     echo "--- Generating Mesh ---"
@@ -158,15 +223,23 @@ run_single_scene() {
     # Print summary for this run
     echo ""
     echo "--- ${SCENE} Run ${RUN} Results ---"
-    echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS}"
+    echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS} | ATE: ${ATE_RMSE}m"
     echo "Acc: ${ACC}cm | Comp: ${COMP}cm | Chamfer: ${CHAMFER}cm | Ratio: ${COMP_RATIO}%"
+    if [ -n "$INITIAL_GAUSS" ] && [ -n "$FINAL_GAUSS" ]; then
+        echo "Gaussians: ${INITIAL_GAUSS} -> ${FINAL_GAUSS} (pruned: ${TOTAL_PRUNED})"
+    fi
     
-    # Append to CSV
-    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ACC},${COMP},${COMP_RATIO},${CHAMFER}" >> "$SUMMARY_ALL"
+    # Append to CSV (add Gaussian stats if uncertainty enabled)
+    if [ "$ENABLE_UNCER" = true ] && [ -n "$INITIAL_GAUSS" ]; then
+        echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${ACC},${COMP},${COMP_RATIO},${CHAMFER},${INITIAL_GAUSS},${FINAL_GAUSS},${TOTAL_PRUNED}" >> "$SUMMARY_ALL"
+    else
+        echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${ACC},${COMP},${COMP_RATIO},${CHAMFER}" >> "$SUMMARY_ALL"
+    fi
     
     # Save individual summary
-    cat > "${RESULT_DIR}/summary.txt" << EOF
+    cat > "${RESULT_DIR}/summary.txt" <<EOF
 PA: ${PA_NAME}, Scene: ${SCENE}, Run: ${RUN}
+Uncertainty Enabled: ${ENABLE_UNCER}
 
 # Loss Weights
 lambda_geo: ${LAMBDA_GEO}
@@ -206,6 +279,9 @@ cd "$BASE_DIR"
 echo ""
 echo "=============================================="
 echo "  ALL RESULTS: ${PA_NAME}"
+if [ "$ENABLE_UNCER" = true ]; then
+    echo "  [UncertPhoto-SLAM Mode]"
+fi
 echo "=============================================="
 echo ""
 cat "$SUMMARY_ALL" | column -t -s','

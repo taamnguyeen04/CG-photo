@@ -152,11 +152,26 @@ public:
     // Depth-Photo-SLAM: Uncertainty management methods
     void initializeUncertainty();
     void updateUncertainty(const torch::Tensor& per_gaussian_uncertainty, int iteration);
-    void uncertaintyPrune(float threshold);
+    void uncertaintyPrune(float threshold, int current_iteration);
     void fisherPrune(float threshold);
     depth_uncertainty::GaussianUncertainty& getUncertainty();
     const depth_uncertainty::UncertaintyConfig& getUncertaintyConfig() const;
     void setUncertaintyConfig(const depth_uncertainty::UncertaintyConfig& config);
+    
+    // UncertPhoto-SLAM: Residual and uncertainty tracking methods
+    void updatePhotometricResidual(
+        const torch::Tensor& visible_mask,         ///< [N] bool: which Gaussians were visible
+        const torch::Tensor& per_gaussian_residual ///< [N] residual contribution
+    );
+    
+    void updateDepthStability(
+        const torch::Tensor& visible_mask,         ///< [N] bool: which Gaussians were visible
+        const torch::Tensor& per_gaussian_depth_diff ///< [N] depth difference
+    );
+    
+    void computeCombinedUncertainty();             ///< Compute σ_i from all components
+    
+    torch::Tensor getCombinedUncertainty();        ///< Get per-Gaussian uncertainty [N]
 
 protected:
     float exponLrFunc(int step);

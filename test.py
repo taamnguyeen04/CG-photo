@@ -1,10 +1,10 @@
 # tạo list
-list_rong = []
-list_snt = [1,2,3,4,2,3,2,2,2]
-list_dongvat = ["heo", "chó", "bò", "gà"]
+# list_rong = []
+# list_snt = [2, 4, 5, 6, 8, 10, 12, 15, 18]
+# list_dongvat = ["heo", "chó", "bò", "gà"]
 
-list_dongvat.append("vịt")
-print(list_dongvat)
+# list_dongvat.append("vịt")
+# print(list_dongvat)
 
 # in theo vị trí
 # print(list_dongvat[3])
@@ -60,3 +60,15 @@ print(list_dongvat)
 
 # sln = sum(list_snt)
 # print(sln)
+
+
+
+n=int(input('Nhập số: '))
+list_rong=[]
+for i in range(0,4):
+    n=int(input('Nhập số: '))
+    list_rong.append(n)
+print('Danh sách: ', list_rong)
+max=max(list_rong)
+min=min(list_rong)
+print('=> Max: ',max,', Min: ',min)

@@ -52,6 +52,23 @@ struct UncertaintyConfig
     // Dynamic object masking
     float dynamic_mask_threshold = 0.3f;     ///< High uncertainty = dynamic object
     bool enable_dynamic_masking = true;
+    
+    // UncertPhoto-SLAM: Time constants for confidence decay
+    float tau_obs = 10.0f;                   ///< obs_confidence = 1 - exp(-count/τ_obs)
+    float tau_res = 0.01f;                   ///< res_confidence = exp(-var/τ_res)
+    float tau_depth = 0.05f;                 ///< depth_confidence = exp(-var/τ_depth)
+    
+    // UncertPhoto-SLAM: Combination weights for σ_i
+    float weight_obs = 0.4f;                 ///< w1 for observation confidence
+    float weight_res = 0.4f;                 ///< w2 for residual confidence
+    float weight_depth = 0.2f;               ///< w3 for depth stability confidence
+    
+    // UncertPhoto-SLAM: Rendering options
+    bool render_uncertainty_map = false;     ///< Output uncertainty as image channel
+    int uncertainty_update_interval = 10;    ///< Update combined σ every N iterations
+    
+    // Grace period: Don't prune Gaussians younger than this many iterations
+    int min_age_for_prune = 500;             ///< Skip pruning for newly created Gaussians
 };
 
 /**
@@ -68,6 +85,17 @@ struct GaussianUncertainty
     torch::Tensor is_stable;             ///< Bool mask: uncertainty < threshold [N]
     torch::Tensor creation_timestamp;    ///< Iteration when Gaussian was created [N]
     
+    // UncertPhoto-SLAM: Photometric residual tracking
+    torch::Tensor residual_sum;          ///< Σ ||I_rendered - I_gt|| per Gaussian [N]
+    torch::Tensor residual_sq_sum;       ///< Σ ||I_rendered - I_gt||² per Gaussian [N]
+    
+    // UncertPhoto-SLAM: Depth stability tracking (RGB-D)
+    torch::Tensor depth_diff_sum;        ///< Σ (d_rendered - d_sensor) per Gaussian [N]
+    torch::Tensor depth_diff_sq_sum;     ///< Σ (d_rendered - d_sensor)² per Gaussian [N]
+    
+    // UncertPhoto-SLAM: Combined uncertainty
+    torch::Tensor combined_uncertainty;  ///< σ_i ∈ [0, 1]: 0=certain, 1=uncertain [N]
+    
     /**
      * @brief Initialize tensors for N Gaussians
      */
@@ -79,6 +107,13 @@ struct GaussianUncertainty
         observation_count = torch::zeros({num_gaussians}, options.dtype(torch::kInt32));
         is_stable = torch::ones({num_gaussians}, options.dtype(torch::kBool));
         creation_timestamp = torch::zeros({num_gaussians}, options.dtype(torch::kInt32));
+        
+        // UncertPhoto-SLAM
+        residual_sum = torch::zeros({num_gaussians}, options);
+        residual_sq_sum = torch::zeros({num_gaussians}, options);
+        depth_diff_sum = torch::zeros({num_gaussians}, options);
+        depth_diff_sq_sum = torch::zeros({num_gaussians}, options);
+        combined_uncertainty = torch::ones({num_gaussians}, options);  // Start uncertain
     }
     
     /**
@@ -93,6 +128,13 @@ struct GaussianUncertainty
         is_stable = torch::cat({is_stable, torch::ones({new_count}, options.dtype(torch::kBool))});
         creation_timestamp = torch::cat({creation_timestamp, 
             torch::full({new_count}, current_iteration, options.dtype(torch::kInt32))});
+        
+        // UncertPhoto-SLAM
+        residual_sum = torch::cat({residual_sum, torch::zeros({new_count}, options)});
+        residual_sq_sum = torch::cat({residual_sq_sum, torch::zeros({new_count}, options)});
+        depth_diff_sum = torch::cat({depth_diff_sum, torch::zeros({new_count}, options)});
+        depth_diff_sq_sum = torch::cat({depth_diff_sq_sum, torch::zeros({new_count}, options)});
+        combined_uncertainty = torch::cat({combined_uncertainty, torch::ones({new_count}, options)});
     }
     
     /**
@@ -106,6 +148,13 @@ struct GaussianUncertainty
         observation_count = observation_count.index({keep_mask});
         is_stable = is_stable.index({keep_mask});
         creation_timestamp = creation_timestamp.index({keep_mask});
+        
+        // UncertPhoto-SLAM
+        residual_sum = residual_sum.index({keep_mask});
+        residual_sq_sum = residual_sq_sum.index({keep_mask});
+        depth_diff_sum = depth_diff_sum.index({keep_mask});
+        depth_diff_sq_sum = depth_diff_sq_sum.index({keep_mask});
+        combined_uncertainty = combined_uncertainty.index({keep_mask});
     }
     
     /**

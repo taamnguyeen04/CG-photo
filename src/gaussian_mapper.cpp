@@ -385,6 +385,32 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         settings_file["GaussianViewer.image_scale"].operator float();
     rendered_image_viewer_scale_main_ =
         settings_file["GaussianViewer.image_scale_main"].operator float();
+    
+    // UncertPhoto-SLAM: Uncertainty tracking parameters
+    depth_uncertainty::UncertaintyConfig unc_config;
+    if (!settings_file["Uncertainty.tau_obs"].empty())
+        unc_config.tau_obs = settings_file["Uncertainty.tau_obs"].operator float();
+    if (!settings_file["Uncertainty.tau_res"].empty())
+        unc_config.tau_res = settings_file["Uncertainty.tau_res"].operator float();
+    if (!settings_file["Uncertainty.tau_depth"].empty())
+        unc_config.tau_depth = settings_file["Uncertainty.tau_depth"].operator float();
+    if (!settings_file["Uncertainty.weight_obs"].empty())
+        unc_config.weight_obs = settings_file["Uncertainty.weight_obs"].operator float();
+    if (!settings_file["Uncertainty.weight_res"].empty())
+        unc_config.weight_res = settings_file["Uncertainty.weight_res"].operator float();
+    if (!settings_file["Uncertainty.weight_depth"].empty())
+        unc_config.weight_depth = settings_file["Uncertainty.weight_depth"].operator float();
+    if (!settings_file["Uncertainty.render_uncertainty_map"].empty())
+        unc_config.render_uncertainty_map = settings_file["Uncertainty.render_uncertainty_map"].operator int() != 0;
+    if (!settings_file["Uncertainty.update_interval"].empty())
+        unc_config.uncertainty_update_interval = settings_file["Uncertainty.update_interval"].operator int();
+    if (!settings_file["Uncertainty.threshold"].empty())
+        unc_config.uncertainty_threshold = settings_file["Uncertainty.threshold"].operator float();
+    if (!settings_file["Uncertainty.min_age_for_prune"].empty())
+        unc_config.min_age_for_prune = settings_file["Uncertainty.min_age_for_prune"].operator int();
+    
+    // Store config for later use
+    uncertainty_config_ = unc_config;
 }
 
 void GaussianMapper::run()
@@ -1073,39 +1099,150 @@ void GaussianMapper::trainForOneIteration()
                     ||(model_params_.white_background_ && getIteration() == opt_params_.densify_from_iter_)))
                 gaussians_->resetOpacity();
         }
+        // ========================================================================
+        // UncertPhoto-SLAM: Per-Gaussian Uncertainty Tracking
+        // ========================================================================
         
-        // Depth-Photo-SLAM: Uncertainty-based pruning
+        // Pass config to Gaussian model (if not already set)
+        if (getIteration() == 1) {
+            gaussians_->setUncertaintyConfig(uncertainty_config_);
+        }
+        
+        // Update per-Gaussian uncertainty tracking using visibility
+        if (uncertainty_config_.render_uncertainty_map) {
+            // visibility_filter: [N] bool tensor indicating which Gaussians contributed
+            // IMPORTANT: Skip if size mismatch (can happen after densification)
+            int64_t num_gaussians = gaussians_->xyz_.size(0);
+            
+            if (visibility_filter.size(0) == num_gaussians) {
+                auto visible_mask = visibility_filter;
+                
+                // Compute photometric residual (L1 between rendered and ground truth)
+                auto residual_map = torch::abs(rendered_image - gt_image);
+                float mean_residual = residual_map.mean().item<float>();
+                
+                // Create per-Gaussian residual (simplified: use mean for all visible)
+                auto per_gaussian_residual = torch::full({num_gaussians}, mean_residual,
+                    torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
+                
+                // Update photometric residual tracking (increments observation count too)
+                gaussians_->updatePhotometricResidual(visible_mask, per_gaussian_residual);
+                
+                // For RGB-D: Update depth stability
+                if (has_gt_depth) {
+                    auto depth_squeezed = depth.squeeze();
+                    auto depth_diff = (depth_squeezed - gt_depth).abs();
+                    float mean_depth_diff = depth_diff.mean().item<float>();
+                    
+                    // Create per-Gaussian depth diff (simplified)
+                    auto per_gaussian_depth_diff = torch::full({num_gaussians}, mean_depth_diff,
+                        torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
+                    
+                    gaussians_->updateDepthStability(visible_mask, per_gaussian_depth_diff);
+                }
+            }
+            
+            // Periodically compute combined uncertainty σ_i
+            if (getIteration() % uncertainty_config_.uncertainty_update_interval == 0) {
+                gaussians_->computeCombinedUncertainty();
+            }
+        }
+        
+        // UncertPhoto-SLAM: Uncertainty-based pruning
         // Run after densification phase to remove high-uncertainty Gaussians
-        const int uncertainty_prune_interval = 500;  // Prune every 500 iterations
-        const float uncertainty_threshold = 0.1f;     // Remove Gaussians with uncertainty > 0.1
+        const int uncertainty_prune_interval = uncertainty_config_.prune_interval;
+        const float uncertainty_threshold = uncertainty_config_.uncertainty_threshold;
         
         if (getIteration() > opt_params_.densify_until_iter_ && 
-            getIteration() % uncertainty_prune_interval == 0) {
+            getIteration() % uncertainty_prune_interval == 0 &&
+            uncertainty_config_.render_uncertainty_map) {
             
-            // Compute per-Gaussian uncertainty from depth variance
-            // Use mean of depth_variance weighted by visibility
-            auto per_gaussian_uncertainty = torch::zeros({gaussians_->xyz_.size(0)}, 
-                torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
-            
-            // Simple heuristic: use variance of depth at visible pixels
-            // Compute depth_variance = E[d²] - E[d]² for pruning heuristic
-            auto depth_variance_for_prune = depth_sq - depth * depth;
-            auto depth_var_mean = depth_variance_for_prune.mean();
-            per_gaussian_uncertainty.fill_(depth_var_mean.item<float>());
-            
-            // Update Gaussian uncertainties with EMA
-            gaussians_->updateUncertainty(per_gaussian_uncertainty, getIteration());
+            // Use combined uncertainty for pruning
+            gaussians_->computeCombinedUncertainty();
             
             // Prune high-uncertainty Gaussians
             int64_t num_before = gaussians_->xyz_.size(0);
-            gaussians_->uncertaintyPrune(uncertainty_threshold);
+            gaussians_->uncertaintyPrune(uncertainty_threshold, getIteration());
             int64_t num_after = gaussians_->xyz_.size(0);
             
             if (num_before != num_after) {
-                std::cout << "[Depth-Photo-SLAM] Uncertainty Pruning: " 
+                std::cout << "[UncertPhoto-SLAM] Combined Uncertainty Pruning: " 
                           << num_before << " -> " << num_after 
                           << " (removed " << (num_before - num_after) << " Gaussians)"
                           << std::endl;
+            }
+            
+            // Log to CSV file for analysis
+            static std::ofstream prune_log_file;
+            static bool prune_log_initialized = false;
+            
+            if (!prune_log_initialized) {
+                auto prune_log_path = result_dir_ / "uncertainty_pruning.csv";
+                prune_log_file.open(prune_log_path);
+                prune_log_file << "iteration,num_before,num_after,num_removed,threshold" << std::endl;
+                prune_log_initialized = true;
+            }
+            
+            if (prune_log_file.is_open()) {
+                prune_log_file << getIteration() << ","
+                              << num_before << ","
+                              << num_after << ","
+                              << (num_before - num_after) << ","
+                              << uncertainty_threshold << std::endl;
+            }
+            
+            // Log uncertainty distribution for analysis
+            static std::ofstream uncer_dist_file;
+            static bool uncer_dist_initialized = false;
+            
+            if (!uncer_dist_initialized) {
+                auto uncer_dist_path = result_dir_ / "uncertainty_distribution.csv";
+                uncer_dist_file.open(uncer_dist_path);
+                uncer_dist_file << "iteration,min,max,mean,std,p10,p25,p50,p75,p90,"
+                               << "below_0.1,0.1_0.2,0.2_0.3,0.3_0.4,0.4_0.5,0.5_0.6,0.6_0.7,0.7_0.8,0.8_0.9,above_0.9" 
+                               << std::endl;
+                uncer_dist_initialized = true;
+            }
+            
+            if (uncer_dist_file.is_open()) {
+                auto combined_uncer = gaussians_->getCombinedUncertainty();
+                if (combined_uncer.defined() && combined_uncer.numel() > 0) {
+                    auto uncer_cpu = combined_uncer.to(torch::kCPU);
+                    
+                    // Basic stats
+                    float min_val = uncer_cpu.min().item<float>();
+                    float max_val = uncer_cpu.max().item<float>();
+                    float mean_val = uncer_cpu.mean().item<float>();
+                    float std_val = uncer_cpu.std().item<float>();
+                    
+                    // Percentiles (sort and index)
+                    auto sorted = std::get<0>(uncer_cpu.sort());
+                    int64_t n = sorted.size(0);
+                    float p10 = sorted[int64_t(n * 0.1)].item<float>();
+                    float p25 = sorted[int64_t(n * 0.25)].item<float>();
+                    float p50 = sorted[int64_t(n * 0.5)].item<float>();
+                    float p75 = sorted[int64_t(n * 0.75)].item<float>();
+                    float p90 = sorted[int64_t(n * 0.9)].item<float>();
+                    
+                    // Histogram bins
+                    int64_t below_01 = (uncer_cpu < 0.1f).sum().item<int64_t>();
+                    int64_t b_01_02 = ((uncer_cpu >= 0.1f) & (uncer_cpu < 0.2f)).sum().item<int64_t>();
+                    int64_t b_02_03 = ((uncer_cpu >= 0.2f) & (uncer_cpu < 0.3f)).sum().item<int64_t>();
+                    int64_t b_03_04 = ((uncer_cpu >= 0.3f) & (uncer_cpu < 0.4f)).sum().item<int64_t>();
+                    int64_t b_04_05 = ((uncer_cpu >= 0.4f) & (uncer_cpu < 0.5f)).sum().item<int64_t>();
+                    int64_t b_05_06 = ((uncer_cpu >= 0.5f) & (uncer_cpu < 0.6f)).sum().item<int64_t>();
+                    int64_t b_06_07 = ((uncer_cpu >= 0.6f) & (uncer_cpu < 0.7f)).sum().item<int64_t>();
+                    int64_t b_07_08 = ((uncer_cpu >= 0.7f) & (uncer_cpu < 0.8f)).sum().item<int64_t>();
+                    int64_t b_08_09 = ((uncer_cpu >= 0.8f) & (uncer_cpu < 0.9f)).sum().item<int64_t>();
+                    int64_t above_09 = (uncer_cpu >= 0.9f).sum().item<int64_t>();
+                    
+                    uncer_dist_file << getIteration() << ","
+                                   << min_val << "," << max_val << "," << mean_val << "," << std_val << ","
+                                   << p10 << "," << p25 << "," << p50 << "," << p75 << "," << p90 << ","
+                                   << below_01 << "," << b_01_02 << "," << b_02_03 << "," << b_03_04 << "," << b_04_05 << ","
+                                   << b_05_06 << "," << b_06_07 << "," << b_07_08 << "," << b_08_09 << "," << above_09
+                                   << std::endl;
+                }
             }
         }
 

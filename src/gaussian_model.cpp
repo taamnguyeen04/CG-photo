@@ -1157,24 +1157,50 @@ void GaussianModel::updateUncertainty(const torch::Tensor& per_gaussian_uncertai
     uncertainty_.updateStability(uncertainty_config_.uncertainty_threshold);
 }
 
-void GaussianModel::uncertaintyPrune(float threshold)
+void GaussianModel::uncertaintyPrune(float threshold, int current_iteration)
 {
-    if (uncertainty_.depth_uncertainty.size(0) == 0)
+    // Use combined_uncertainty (σ_i) computed by computeCombinedUncertainty()
+    if (uncertainty_.combined_uncertainty.size(0) == 0)
         return;
     
-    // Create prune mask for Gaussians with high uncertainty
-    auto prune_mask = uncertainty_.depth_uncertainty > threshold;
+    // Create prune mask for Gaussians with high uncertainty (σ > threshold)
+    auto prune_mask = uncertainty_.combined_uncertainty > threshold;
+    
+    // Grace period: Don't prune Gaussians that are too young (iteration-based)
+    int min_age = uncertainty_config_.min_age_for_prune;
+    if (min_age > 0 && uncertainty_.creation_timestamp.size(0) > 0) {
+        // Use iteration age: current_iteration - creation_timestamp
+        auto age = current_iteration - uncertainty_.creation_timestamp;
+        auto young_mask = age < min_age;
+        
+        int num_would_prune_young = (prune_mask & young_mask).sum().item<int>();
+        
+        if (num_would_prune_young > 0) {
+            std::cout << "[UncertPhoto-SLAM] Grace period: Protecting " << num_would_prune_young 
+                      << " young Gaussians (age < " << min_age << " iters)" << std::endl;
+        }
+        
+        // Exclude young Gaussians from pruning
+        prune_mask = prune_mask & ~young_mask;
+    }
     
     // Don't prune too many at once - limit to 10%
     int num_to_prune = prune_mask.sum().item<int>();
     int max_prune = static_cast<int>(xyz_.size(0) * 0.1f);
     
     if (num_to_prune > max_prune) {
-        // Sort by uncertainty and only prune the worst ones
-        auto [sorted_uncertainty, indices] = torch::sort(uncertainty_.depth_uncertainty, /*descending=*/true);
+        // Sort by uncertainty and only prune the worst ones (dim=0 for 1D tensor)
+        auto [sorted_uncertainty, indices] = torch::sort(uncertainty_.combined_uncertainty, /*dim=*/0, /*descending=*/true);
         auto top_indices = indices.slice(0, 0, max_prune);
         prune_mask = torch::zeros_like(prune_mask);
         prune_mask.index_put_({top_indices}, true);
+        
+        // Re-apply grace period protection
+        if (min_age > 0 && uncertainty_.creation_timestamp.size(0) > 0) {
+            auto age = current_iteration - uncertainty_.creation_timestamp;
+            auto young_mask = age < min_age;
+            prune_mask = prune_mask & ~young_mask;
+        }
     }
     
     if (prune_mask.any().item<bool>()) {
@@ -1217,4 +1243,105 @@ const depth_uncertainty::UncertaintyConfig& GaussianModel::getUncertaintyConfig(
 void GaussianModel::setUncertaintyConfig(const depth_uncertainty::UncertaintyConfig& config)
 {
     uncertainty_config_ = config;
+}
+
+// ============================================================================
+// UncertPhoto-SLAM: Residual and Uncertainty Tracking Methods
+// ============================================================================
+
+void GaussianModel::updatePhotometricResidual(
+    const torch::Tensor& visible_mask,
+    const torch::Tensor& per_gaussian_residual)
+{
+    // visible_mask: [N] bool tensor
+    // per_gaussian_residual: [N] float tensor with residual values
+    
+    if (uncertainty_.residual_sum.size(0) != visible_mask.size(0)) {
+        initializeUncertainty();
+    }
+    
+    // Only update visible Gaussians
+    auto visible_idx = visible_mask.nonzero().squeeze(-1);
+    if (visible_idx.numel() == 0) return;
+    
+    auto residual = per_gaussian_residual.index({visible_idx});
+    
+    // Accumulate: residual_sum += residual, residual_sq_sum += residual²
+    uncertainty_.residual_sum.index_put_({visible_idx},
+        uncertainty_.residual_sum.index({visible_idx}) + residual);
+    uncertainty_.residual_sq_sum.index_put_({visible_idx},
+        uncertainty_.residual_sq_sum.index({visible_idx}) + residual.pow(2));
+    
+    // Increment observation count only for visible
+    uncertainty_.observation_count.index_put_({visible_idx},
+        uncertainty_.observation_count.index({visible_idx}) + 1);
+}
+
+void GaussianModel::updateDepthStability(
+    const torch::Tensor& visible_mask,
+    const torch::Tensor& per_gaussian_depth_diff)
+{
+    if (uncertainty_.depth_diff_sum.size(0) != visible_mask.size(0)) {
+        initializeUncertainty();
+    }
+    
+    auto visible_idx = visible_mask.nonzero().squeeze(-1);
+    if (visible_idx.numel() == 0) return;
+    
+    auto depth_diff = per_gaussian_depth_diff.index({visible_idx});
+    
+    // Accumulate depth differences
+    uncertainty_.depth_diff_sum.index_put_({visible_idx},
+        uncertainty_.depth_diff_sum.index({visible_idx}) + depth_diff);
+    uncertainty_.depth_diff_sq_sum.index_put_({visible_idx},
+        uncertainty_.depth_diff_sq_sum.index({visible_idx}) + depth_diff.pow(2));
+}
+
+void GaussianModel::computeCombinedUncertainty()
+{
+    // Formula: σ_i = 1 - (w1*obs_conf + w2*res_conf + w3*depth_conf)
+    
+    int64_t N = uncertainty_.observation_count.size(0);
+    if (N == 0) return;
+    
+    // Get config values
+    float tau_obs = uncertainty_config_.tau_obs;
+    float tau_res = uncertainty_config_.tau_res;
+    float tau_depth = uncertainty_config_.tau_depth;
+    float w1 = uncertainty_config_.weight_obs;
+    float w2 = uncertainty_config_.weight_res;
+    float w3 = uncertainty_config_.weight_depth;
+    
+    // obs_confidence = 1 - exp(-count / τ_obs)
+    auto count = uncertainty_.observation_count.to(torch::kFloat32);
+    auto obs_conf = 1.0f - torch::exp(-count / tau_obs);
+    
+    // residual_variance = E[r²] - E[r]²
+    auto safe_count = torch::clamp_min(count, 1.0f);
+    auto res_mean = uncertainty_.residual_sum / safe_count;
+    auto res_var = (uncertainty_.residual_sq_sum / safe_count) - res_mean.pow(2);
+    res_var = torch::clamp_min(res_var, 0.0f);  // Numerical stability
+    auto res_conf = torch::exp(-res_var / tau_res);
+    
+    // depth_variance = E[d²] - E[d]²
+    auto depth_mean = uncertainty_.depth_diff_sum / safe_count;
+    auto depth_var = (uncertainty_.depth_diff_sq_sum / safe_count) - depth_mean.pow(2);
+    depth_var = torch::clamp_min(depth_var, 0.0f);
+    auto depth_conf = torch::exp(-depth_var / tau_depth);
+    
+    // Combined uncertainty: σ_i = 1 - weighted_sum(confidences)
+    auto combined_conf = w1 * obs_conf + w2 * res_conf + w3 * depth_conf;
+    uncertainty_.combined_uncertainty = 1.0f - combined_conf;
+    
+    // Clamp to [0, 1]
+    uncertainty_.combined_uncertainty = torch::clamp(
+        uncertainty_.combined_uncertainty, 0.0f, 1.0f);
+    
+    // Update stability flags based on combined uncertainty
+    uncertainty_.is_stable = uncertainty_.combined_uncertainty < uncertainty_config_.uncertainty_threshold;
+}
+
+torch::Tensor GaussianModel::getCombinedUncertainty()
+{
+    return uncertainty_.combined_uncertainty;
 }

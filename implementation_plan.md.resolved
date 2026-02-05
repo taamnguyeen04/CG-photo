@@ -1,0 +1,637 @@
+# UncertPhoto-SLAM Implementation Plan (Chi Tiết)
+
+## Tổng Quan Kiến Trúc
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      Pipeline UncertPhoto-SLAM                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Gaussian G_i:                                                              │
+│  ├── μ (position)        → xyz_                                            │
+│  ├── Σ (covariance)      → scaling_, rotation_                             │
+│  ├── c (color/SH)        → features_dc_, features_rest_                    │
+│  ├── α (opacity)         → opacity_                                        │
+│  └── σ_i (uncertainty)   → combined_uncertainty [MỚI]                      │
+│                                                                             │
+│  Uncertainty Components:                                                    │
+│  ├── obs_count_i         → observation_count [Đã có, cần sửa]             │
+│  ├── residual_var_i      → residual_variance [MỚI]                         │
+│  └── depth_stability_i   → depth_stability [MỚI]                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## PHASE 1: Mở Rộng Gaussian Representation
+
+### Bước 1.1: Thêm tensors mới vào GaussianUncertainty
+
+**File**: [depth_uncertainty.h](file:///media/tam/DATA/3D/CG-photo/include/depth_uncertainty.h)
+
+**Dòng cần sửa**: 63-126 (struct GaussianUncertainty)
+
+```diff
+ struct GaussianUncertainty
+ {
+     torch::Tensor depth_uncertainty;     ///< v_i: accumulated depth error variance [N]
+     torch::Tensor fisher_info_score;     ///< FIM diagonal trace score [N]
+     torch::Tensor observation_count;     ///< Number of frames this Gaussian was observed [N]
+     torch::Tensor is_stable;             ///< Bool mask: uncertainty < threshold [N]
+     torch::Tensor creation_timestamp;    ///< Iteration when Gaussian was created [N]
++    
++    // UncertPhoto-SLAM: Photometric residual tracking
++    torch::Tensor residual_sum;          ///< Σ ||I_rendered - I_gt|| per Gaussian [N]
++    torch::Tensor residual_sq_sum;       ///< Σ ||I_rendered - I_gt||² per Gaussian [N]
++    
++    // UncertPhoto-SLAM: Depth stability tracking (RGB-D)
++    torch::Tensor depth_diff_sum;        ///< Σ (d_rendered - d_sensor) per Gaussian [N]
++    torch::Tensor depth_diff_sq_sum;     ///< Σ (d_rendered - d_sensor)² per Gaussian [N]
++    
++    // UncertPhoto-SLAM: Combined uncertainty
++    torch::Tensor combined_uncertainty;  ///< σ_i ∈ [0, 1]: 0=certain, 1=uncertain [N]
+```
+
+### Bước 1.2: Cập nhật hàm initialize()
+
+**File**: [depth_uncertainty.h](file:///media/tam/DATA/3D/CG-photo/include/depth_uncertainty.h)
+
+**Dòng cần sửa**: 74-82
+
+```diff
+     void initialize(int64_t num_gaussians, torch::DeviceType device = torch::kCUDA)
+     {
+         auto options = torch::TensorOptions().device(device);
+         depth_uncertainty = torch::zeros({num_gaussians}, options);
+         fisher_info_score = torch::zeros({num_gaussians}, options);
+         observation_count = torch::zeros({num_gaussians}, options.dtype(torch::kInt32));
+         is_stable = torch::ones({num_gaussians}, options.dtype(torch::kBool));
+         creation_timestamp = torch::zeros({num_gaussians}, options.dtype(torch::kInt32));
++        
++        // UncertPhoto-SLAM
++        residual_sum = torch::zeros({num_gaussians}, options);
++        residual_sq_sum = torch::zeros({num_gaussians}, options);
++        depth_diff_sum = torch::zeros({num_gaussians}, options);
++        depth_diff_sq_sum = torch::zeros({num_gaussians}, options);
++        combined_uncertainty = torch::ones({num_gaussians}, options);  // Start uncertain
+     }
+```
+
+### Bước 1.3: Cập nhật hàm extend()
+
+**File**: [depth_uncertainty.h](file:///media/tam/DATA/3D/CG-photo/include/depth_uncertainty.h)
+
+**Dòng cần sửa**: 87-96
+
+```diff
+     void extend(int64_t new_count, int current_iteration, torch::DeviceType device = torch::kCUDA)
+     {
+         auto options = torch::TensorOptions().device(device);
+         depth_uncertainty = torch::cat({depth_uncertainty, torch::zeros({new_count}, options)});
+         fisher_info_score = torch::cat({fisher_info_score, torch::zeros({new_count}, options)});
+         observation_count = torch::cat({observation_count, torch::zeros({new_count}, options.dtype(torch::kInt32))});
+         is_stable = torch::cat({is_stable, torch::ones({new_count}, options.dtype(torch::kBool))});
+         creation_timestamp = torch::cat({creation_timestamp, 
+             torch::full({new_count}, current_iteration, options.dtype(torch::kInt32))});
++        
++        // UncertPhoto-SLAM
++        residual_sum = torch::cat({residual_sum, torch::zeros({new_count}, options)});
++        residual_sq_sum = torch::cat({residual_sq_sum, torch::zeros({new_count}, options)});
++        depth_diff_sum = torch::cat({depth_diff_sum, torch::zeros({new_count}, options)});
++        depth_diff_sq_sum = torch::cat({depth_diff_sq_sum, torch::zeros({new_count}, options)});
++        combined_uncertainty = torch::cat({combined_uncertainty, torch::ones({new_count}, options)});
+     }
+```
+
+### Bước 1.4: Cập nhật hàm prune()
+
+**File**: [depth_uncertainty.h](file:///media/tam/DATA/3D/CG-photo/include/depth_uncertainty.h)
+
+**Dòng cần sửa**: 101-109
+
+```diff
+     void prune(const torch::Tensor& prune_mask)
+     {
+         auto keep_mask = ~prune_mask;
+         depth_uncertainty = depth_uncertainty.index({keep_mask});
+         fisher_info_score = fisher_info_score.index({keep_mask});
+         observation_count = observation_count.index({keep_mask});
+         is_stable = is_stable.index({keep_mask});
+         creation_timestamp = creation_timestamp.index({keep_mask});
++        
++        // UncertPhoto-SLAM
++        residual_sum = residual_sum.index({keep_mask});
++        residual_sq_sum = residual_sq_sum.index({keep_mask});
++        depth_diff_sum = depth_diff_sum.index({keep_mask});
++        depth_diff_sq_sum = depth_diff_sq_sum.index({keep_mask});
++        combined_uncertainty = combined_uncertainty.index({keep_mask});
+     }
+```
+
+### Bước 1.5: Thêm config parameters
+
+**File**: [depth_uncertainty.h](file:///media/tam/DATA/3D/CG-photo/include/depth_uncertainty.h)
+
+**Dòng cần sửa**: 29-55 (struct UncertaintyConfig)
+
+```diff
+ struct UncertaintyConfig
+ {
+     // Pruning thresholds
+     float uncertainty_threshold = 0.1f;
+     float fisher_prune_threshold = 0.001f;
+     int prune_interval = 100;
+     
+     // Loss function weights
+     float alignment_lambda = 0.1f;
+     float isotropy_lambda = 0.01f;
+     float variance_lambda = 0.001f;
+     float depth_lambda = 1.0f;
+     
+     // ... existing ...
++    
++    // UncertPhoto-SLAM: Time constants (τ values)
++    float tau_obs = 10.0f;       ///< obs_confidence = 1 - exp(-count/τ_obs)
++    float tau_res = 0.01f;       ///< res_confidence = exp(-var/τ_res)
++    float tau_depth = 0.05f;     ///< depth_confidence = exp(-var/τ_depth)
++    
++    // UncertPhoto-SLAM: Combination weights
++    float weight_obs = 0.4f;     ///< w1 for observation confidence
++    float weight_res = 0.4f;     ///< w2 for residual confidence
++    float weight_depth = 0.2f;   ///< w3 for depth stability confidence
++    
++    // UncertPhoto-SLAM: Rendering options
++    bool render_uncertainty_map = false;   ///< Output uncertainty as image channel
++    int uncertainty_update_interval = 10;  ///< Update combined σ every N iterations
+ };
+```
+
+---
+
+## PHASE 2: Observation Count Tracking (Per-Gaussian)
+
+### Bước 2.1: Thêm visibility output vào CUDA kernel
+
+**File**: [forward.cu](file:///media/tam/DATA/3D/CG-photo/cuda_rasterizer/forward.cu)
+
+**Dòng cần sửa**: 263-282 (renderCUDA signature)
+
+```diff
+ template <uint32_t CHANNELS>
+ __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+ renderCUDA(
+     const uint2* __restrict__ ranges,
+     const uint32_t* __restrict__ point_list,
+     int W, int H,
+     const float2* __restrict__ points_xy_image,
+     const float* __restrict__ features,
+     const float* __restrict__ depths,
+     const float4* __restrict__ conic_opacity,
+     float* __restrict__ final_T,
+     uint32_t* __restrict__ n_contrib,
+     const float* __restrict__ bg_color,
+     float* __restrict__ out_color,
+     float* __restrict__ out_depth,
+     float* __restrict__ out_depth_sq,
+     float* __restrict__ out_median_depth,
+     const float* __restrict__ gt_depth,
+-    float* __restrict__ out_uncertainty)
++    float* __restrict__ out_uncertainty,
++    // UncertPhoto-SLAM: visibility tracking
++    int* __restrict__ gaussian_visible_count,      // [P] atomic increment per visible Gaussian
++    const float* __restrict__ gaussian_uncertainty // [P] per-Gaussian σ_i for rendering
++    float* __restrict__ out_uncertainty_map)       // [H,W] rendered uncertainty map
+```
+
+### Bước 2.2: Thêm visibility increment trong inner loop
+
+**File**: [forward.cu](file:///media/tam/DATA/3D/CG-photo/cuda_rasterizer/forward.cu)
+
+**Dòng cần sửa**: 374-404 (inner loop)
+
+```diff
+             // Eq. (3) from 3D Gaussian splatting paper.
+             for (int ch = 0; ch < CHANNELS; ch++)
+                 C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+
+             // Depth-Photo-SLAM: Accumulate depth
+             float gaussian_depth = collected_depths[j];
+             float weight = alpha * T;
+             D += gaussian_depth * weight;
+             D_sq += gaussian_depth * gaussian_depth * weight;
+             
++            // UncertPhoto-SLAM: Mark this Gaussian as visible
++            if (gaussian_visible_count != nullptr) {
++                // Use atomic to handle multiple pixels seeing same Gaussian
++                atomicAdd(&gaussian_visible_count[collected_id[j]], 1);
++            }
++            
++            // UncertPhoto-SLAM: Accumulate uncertainty for uncertainty map
++            if (gaussian_uncertainty != nullptr && out_uncertainty_map != nullptr) {
++                float sigma_i = gaussian_uncertainty[collected_id[j]];
++                U_map += sigma_i * weight;  // σ_pixel = Σ α_i * T_i * σ_i
++            }
++            
+             // CG-SLAM: Accumulate uncertainty for L_var
+             if (gt_depth != nullptr) {
+                 float depth_diff = gaussian_depth - gt_d;
+                 U += depth_diff * depth_diff * weight;
+             }
+```
+
+### Bước 2.3: Thêm local variable cho uncertainty map
+
+**File**: [forward.cu](file:///media/tam/DATA/3D/CG-photo/cuda_rasterizer/forward.cu)
+
+**Dòng cần sửa**: 320-324 (khởi tạo local variables)
+
+```diff
+     // CG-SLAM: Initialize uncertainty accumulator for L_var
+     float U = 0.0f;           // Uncertainty: U = Σ αᵢTᵢ(dᵢ - D_gt)²
+     // Load ground truth depth for this pixel (if available)
+     float gt_d = (gt_depth != nullptr && inside) ? gt_depth[pix_id] : 0.0f;
++    
++    // UncertPhoto-SLAM: Uncertainty map accumulator
++    float U_map = 0.0f;       // σ_pixel = Σ α_i * T_i * σ_i
+```
+
+### Bước 2.4: Thêm output cho uncertainty map
+
+**File**: [forward.cu](file:///media/tam/DATA/3D/CG-photo/cuda_rasterizer/forward.cu)
+
+**Dòng cần sửa**: 423-426 (output section)
+
+```diff
+         // CG-SLAM: Write uncertainty output
+         if (out_uncertainty != nullptr) {
+             out_uncertainty[pix_id] = U;
+         }
++        
++        // UncertPhoto-SLAM: Write uncertainty map output
++        if (out_uncertainty_map != nullptr) {
++            out_uncertainty_map[pix_id] = U_map;
++        }
+```
+
+---
+
+## PHASE 3: Photometric Residual Tracking
+
+### Bước 3.1: Thêm method tracking residual trong GaussianModel
+
+**File**: [gaussian_model.h](file:///media/tam/DATA/3D/CG-photo/include/gaussian_model.h)
+
+**Dòng cần thêm**: sau 159
+
+```diff
+     void setUncertaintyConfig(const depth_uncertainty::UncertaintyConfig& config);
++    
++    // UncertPhoto-SLAM: Residual tracking
++    void updatePhotometricResidual(
++        const torch::Tensor& visible_mask,    // [N] bool: which Gaussians were visible
++        const torch::Tensor& per_gaussian_residual  // [N] residual contribution
++    );
++    
++    void updateDepthStability(
++        const torch::Tensor& visible_mask,
++        const torch::Tensor& per_gaussian_depth_diff
++    );
++    
++    void computeCombinedUncertainty();  // Compute σ_i from all components
+```
+
+### Bước 3.2: Implement updatePhotometricResidual
+
+**File**: [gaussian_model.cpp](file:///media/tam/DATA/3D/CG-photo/src/gaussian_model.cpp)
+
+**Thêm sau dòng 1220**:
+
+```cpp
+// ============================================================================
+// UncertPhoto-SLAM: Residual and Uncertainty Tracking
+// ============================================================================
+
+void GaussianModel::updatePhotometricResidual(
+    const torch::Tensor& visible_mask,
+    const torch::Tensor& per_gaussian_residual)
+{
+    // visible_mask: [N] bool tensor
+    // per_gaussian_residual: [N] float tensor with residual values
+    
+    if (uncertainty_.residual_sum.size(0) != visible_mask.size(0)) {
+        initializeUncertainty();
+    }
+    
+    // Only update visible Gaussians
+    auto visible_idx = visible_mask.nonzero().squeeze(-1);
+    if (visible_idx.numel() == 0) return;
+    
+    auto residual = per_gaussian_residual.index({visible_idx});
+    
+    // Accumulate: residual_sum += residual, residual_sq_sum += residual²
+    uncertainty_.residual_sum.index_put_({visible_idx},
+        uncertainty_.residual_sum.index({visible_idx}) + residual);
+    uncertainty_.residual_sq_sum.index_put_({visible_idx},
+        uncertainty_.residual_sq_sum.index({visible_idx}) + residual.pow(2));
+    
+    // Increment observation count only for visible
+    uncertainty_.observation_count.index_put_({visible_idx},
+        uncertainty_.observation_count.index({visible_idx}) + 1);
+}
+
+void GaussianModel::updateDepthStability(
+    const torch::Tensor& visible_mask,
+    const torch::Tensor& per_gaussian_depth_diff)
+{
+    if (uncertainty_.depth_diff_sum.size(0) != visible_mask.size(0)) {
+        initializeUncertainty();
+    }
+    
+    auto visible_idx = visible_mask.nonzero().squeeze(-1);
+    if (visible_idx.numel() == 0) return;
+    
+    auto depth_diff = per_gaussian_depth_diff.index({visible_idx});
+    
+    // Accumulate depth differences
+    uncertainty_.depth_diff_sum.index_put_({visible_idx},
+        uncertainty_.depth_diff_sum.index({visible_idx}) + depth_diff);
+    uncertainty_.depth_diff_sq_sum.index_put_({visible_idx},
+        uncertainty_.depth_diff_sq_sum.index({visible_idx}) + depth_diff.pow(2));
+}
+```
+
+---
+
+## PHASE 4: Depth Stability (RGB-D Mode)
+
+Đã được xử lý trong Bước 3.2 với hàm `updateDepthStability()`.
+
+---
+
+## PHASE 5: Combined Uncertainty Computation
+
+### Bước 5.1: Implement computeCombinedUncertainty
+
+**File**: [gaussian_model.cpp](file:///media/tam/DATA/3D/CG-photo/src/gaussian_model.cpp)
+
+**Thêm tiếp sau code ở Phase 3**:
+
+```cpp
+void GaussianModel::computeCombinedUncertainty()
+{
+    // Formula: σ_i = 1 - (w1*obs_conf + w2*res_conf + w3*depth_conf)
+    
+    int64_t N = uncertainty_.observation_count.size(0);
+    if (N == 0) return;
+    
+    // Get config values
+    float tau_obs = uncertainty_config_.tau_obs;
+    float tau_res = uncertainty_config_.tau_res;
+    float tau_depth = uncertainty_config_.tau_depth;
+    float w1 = uncertainty_config_.weight_obs;
+    float w2 = uncertainty_config_.weight_res;
+    float w3 = uncertainty_config_.weight_depth;
+    
+    // obs_confidence = 1 - exp(-count / τ_obs)
+    auto count = uncertainty_.observation_count.to(torch::kFloat32);
+    auto obs_conf = 1.0f - torch::exp(-count / tau_obs);
+    
+    // residual_variance = E[r²] - E[r]²
+    auto safe_count = torch::clamp_min(count, 1.0f);
+    auto res_mean = uncertainty_.residual_sum / safe_count;
+    auto res_var = (uncertainty_.residual_sq_sum / safe_count) - res_mean.pow(2);
+    res_var = torch::clamp_min(res_var, 0.0f);  // Numerical stability
+    auto res_conf = torch::exp(-res_var / tau_res);
+    
+    // depth_variance = E[d²] - E[d]²
+    auto depth_mean = uncertainty_.depth_diff_sum / safe_count;
+    auto depth_var = (uncertainty_.depth_diff_sq_sum / safe_count) - depth_mean.pow(2);
+    depth_var = torch::clamp_min(depth_var, 0.0f);
+    auto depth_conf = torch::exp(-depth_var / tau_depth);
+    
+    // Combined uncertainty: σ_i = 1 - weighted_sum(confidences)
+    auto combined_conf = w1 * obs_conf + w2 * res_conf + w3 * depth_conf;
+    uncertainty_.combined_uncertainty = 1.0f - combined_conf;
+    
+    // Clamp to [0, 1]
+    uncertainty_.combined_uncertainty = torch::clamp(
+        uncertainty_.combined_uncertainty, 0.0f, 1.0f);
+    
+    // Update stability flags
+    uncertainty_.updateStability(uncertainty_config_.uncertainty_threshold);
+}
+```
+
+---
+
+## PHASE 6: Uncertainty Map Rendering
+
+### Bước 6.1: Cập nhật ImageState
+
+**File**: [rasterizer_impl.h](file:///media/tam/DATA/3D/CG-photo/cuda_rasterizer/rasterizer_impl.h)
+
+**Thêm field mới**:
+
+```diff
+ struct ImageState
+ {
+     uint2* ranges;
+     uint32_t* n_contrib;
+     float* accum_alpha;
+     float* out_depth;
+     float* out_depth_sq;
+     float* out_median_depth;
+     float* out_uncertainty;
++    float* out_uncertainty_map;  // UncertPhoto-SLAM: rendered per-Gaussian uncertainty
+ };
+```
+
+### Bước 6.2: Allocate buffer trong fromChunk
+
+**File**: [rasterizer_impl.cu](file:///media/tam/DATA/3D/CG-photo/cuda_rasterizer/rasterizer_impl.cu)
+
+**Dòng 182-184**:
+
+```diff
+     obtain(chunk, img.out_median_depth, N, 128);
+     // CG-SLAM: allocate uncertainty output buffer for L_var
+     obtain(chunk, img.out_uncertainty, N, 128);
++    // UncertPhoto-SLAM: allocate uncertainty map buffer
++    obtain(chunk, img.out_uncertainty_map, N, 128);
+```
+
+### Bước 6.3: Cập nhật forward signature
+
+**File**: [rasterizer.h](file:///media/tam/DATA/3D/CG-photo/cuda_rasterizer/rasterizer.h)
+
+Thêm parameters cho uncertainty map.
+
+---
+
+## PHASE 7: Integration & Testing
+
+### Bước 7.1: Cập nhật training loop
+
+**File**: [gaussian_mapper.cpp](file:///media/tam/DATA/3D/CG-photo/src/gaussian_mapper.cpp)
+
+**Trong trainForOneIteration(), sau khi có rendered image**:
+
+```cpp
+// UncertPhoto-SLAM: Update per-Gaussian uncertainty tracking
+if (this->uncertainty_config_.render_uncertainty_map) {
+    // Get visibility mask from rendering
+    auto visible_mask = radii > 0;  // Gaussians that contributed to this frame
+    
+    // Compute per-Gaussian photometric residual contribution
+    // This is approximated by projecting pixel residuals back to Gaussians
+    auto residual_map = torch::abs(rendered - gt_image);
+    auto mean_residual = residual_map.mean();  // Simplified: use global mean
+    auto per_gaussian_residual = mean_residual.expand({visible_mask.size(0)});
+    
+    pGaussian_Model_->updatePhotometricResidual(visible_mask, per_gaussian_residual);
+    
+    // For RGB-D: Update depth stability
+    if (has_gt_depth) {
+        auto depth_diff_map = depth - gt_depth;
+        // Similar backprojection to per-Gaussian
+        pGaussian_Model_->updateDepthStability(visible_mask, depth_diff);
+    }
+    
+    // Periodically update combined uncertainty
+    if (iteration % uncertainty_config_.uncertainty_update_interval == 0) {
+        pGaussian_Model_->computeCombinedUncertainty();
+    }
+}
+```
+
+### Bước 7.2: Thêm YAML config loading
+
+**File**: [gaussian_mapper.cpp](file:///media/tam/DATA/3D/CG-photo/src/gaussian_mapper.cpp)
+
+**Trong readConfigFromFile()**:
+
+```cpp
+// UncertPhoto-SLAM parameters
+if (config["uncertainty"]) {
+    auto unc = config["uncertainty"];
+    uncertainty_config_.tau_obs = unc["tau_obs"].as<float>(10.0f);
+    uncertainty_config_.tau_res = unc["tau_res"].as<float>(0.01f);
+    uncertainty_config_.tau_depth = unc["tau_depth"].as<float>(0.05f);
+    uncertainty_config_.weight_obs = unc["weight_obs"].as<float>(0.4f);
+    uncertainty_config_.weight_res = unc["weight_res"].as<float>(0.4f);
+    uncertainty_config_.weight_depth = unc["weight_depth"].as<float>(0.2f);
+    uncertainty_config_.render_uncertainty_map = unc["render_uncertainty_map"].as<bool>(false);
+    uncertainty_config_.uncertainty_update_interval = unc["update_interval"].as<int>(10);
+}
+```
+
+### Bước 7.3: Tạo config file mới
+
+**File mới**: `cfg/replica_rgbd/replica_pa_uncertainty.yaml`
+
+```yaml
+# Copy từ replica_pa6.yaml và thêm:
+
+uncertainty:
+  tau_obs: 10.0        # Observation count decay
+  tau_res: 0.01        # Residual variance decay  
+  tau_depth: 0.05      # Depth stability decay
+  weight_obs: 0.4      # w1
+  weight_res: 0.4      # w2
+  weight_depth: 0.2    # w3
+  render_uncertainty_map: true
+  update_interval: 10
+```
+
+---
+
+## Verification Plan
+
+### Test 1: Build
+
+```bash
+cd /media/tam/DATA/3D/CG-photo
+./build.sh 2>&1 | tee build.log
+# Check for errors
+grep -i "error" build.log
+```
+
+### Test 2: Unit Test Uncertainty Formula
+
+```bash
+cat > /media/tam/DATA/3D/CG-photo/scripts/test_uncertainty_formula.py << 'EOF'
+import torch
+import math
+
+def test_obs_confidence():
+    tau_obs = 10.0
+    obs_count = torch.tensor([0, 5, 10, 20, 50, 100])
+    expected = 1 - torch.exp(-obs_count.float() / tau_obs)
+    # count=0 → conf=0, count=10 → conf≈0.632, count=100 → conf≈1.0
+    print("obs_count:", obs_count.tolist())
+    print("obs_confidence:", expected.tolist())
+    assert expected[0] == 0.0
+    assert abs(expected[2] - 0.632) < 0.01
+    print("✓ obs_confidence test passed")
+
+def test_combined_uncertainty():
+    obs_conf = torch.tensor([0.0, 0.5, 1.0])
+    res_conf = torch.tensor([0.0, 0.5, 1.0])
+    depth_conf = torch.tensor([0.0, 0.5, 1.0])
+    w1, w2, w3 = 0.4, 0.4, 0.2
+    
+    sigma = 1.0 - (w1 * obs_conf + w2 * res_conf + w3 * depth_conf)
+    print("combined_uncertainty:", sigma.tolist())
+    # When all conf=0 → σ=1 (uncertain), all conf=1 → σ=0 (certain)
+    assert sigma[0] == 1.0
+    assert sigma[2] == 0.0
+    print("✓ combined_uncertainty test passed")
+
+if __name__ == "__main__":
+    test_obs_confidence()
+    test_combined_uncertainty()
+    print("\n✓ All tests passed!")
+EOF
+
+python /media/tam/DATA/3D/CG-photo/scripts/test_uncertainty_formula.py
+```
+
+### Test 3: Integration Test
+
+```bash
+cd /media/tam/DATA/3D/CG-photo
+./bin/replica_rgbd \
+    ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    cfg/replica_rgbd/replica.yaml \
+    cfg/replica_rgbd/replica_pa_uncertainty.yaml \
+    /path/to/Replica/office0 \
+    results_uncertainty_test \
+    no_viewer
+
+# Verify outputs
+ls results_uncertainty_test/
+# Should include: uncertainty_map_*.png
+```
+
+---
+
+## Metrics Đánh Giá
+
+| Metric | Công thức | Ý nghĩa |
+|--------|-----------|---------|
+| **Uncertainty-Error Correlation** | Pearson(σ_pixel, depth_error) | σ cao → error cao? (target: > 0.5) |
+| **Pruning Rate** | #pruned / #total | % Gaussians bị xóa do σ cao |
+| **PSNR Change** | PSNR_new - PSNR_baseline | Ảnh hưởng đến chất lượng render |
+| **Mesh Accuracy** | Chamfer Distance | Cải thiện geometry? |
+
+---
+
+## Timeline Dự Kiến
+
+| Day | Phase | Tasks |
+|-----|-------|-------|
+| 1 | Phase 1 | Sửa depth_uncertainty.h |
+| 2 | Phase 2-3 | Sửa forward.cu, gaussian_model.cpp |
+| 3 | Phase 4-5 | Depth stability + Combined uncertainty |
+| 4 | Phase 6 | Uncertainty map rendering |
+| 5 | Phase 7 | Integration + Config |
+| 6-7 | Testing | Run experiments, collect metrics |

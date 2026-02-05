@@ -48,6 +48,7 @@
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
 #include "gaussian_trainer.h"
+#include "depth_uncertainty.h"
 
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                                       \
     if (!dir.empty() && !std::filesystem::exists(dir))                                      \
@@ -324,6 +325,9 @@ protected:
 
     int prune_big_point_after_iter_;
     float densify_min_opacity_ = 20;
+
+    // UncertPhoto-SLAM: Uncertainty config
+    depth_uncertainty::UncertaintyConfig uncertainty_config_;
 
     // Tools
     std::random_device rd_;

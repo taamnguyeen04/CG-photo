@@ -1,56 +1,70 @@
 # ============================================================================
-# Photo-SLAM / CG-SLAM Loss Ablation Study
+# Photo-SLAM / CG-SLAM / UncertPhoto-SLAM Loss Ablation Study
 # ============================================================================
-# Format: PA_NAME,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z
+# Format: PA_NAME,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z,enable_uncer
 #
 # Naming Convention:
 #   geo = lambda_geo, var = lambda_var, iso = lambda_iso, al = lambda_align
+#   uncer = uncertainty tracking enabled
 #   Number = lambda value × 10 (e.g., 05 = 0.5, 02 = 0.2, 01 = 0.1)
-#   Example: geo05var02 = lambda_geo=0.5, lambda_var=0.2
+#   Example: geo05var02_uncer = lambda_geo=0.5, lambda_var=0.2, uncertainty=true
 #
 # All experiments use: lambda_dssim=0.2, lambda_smooth=0, flatten_z=false (3DGS)
+# enable_uncer: true = enable UncertPhoto-SLAM uncertainty tracking & pruning
 # ============================================================================
 
 # ===== BASELINE: No geometric loss =====
-# PA_NAME,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z
-baseline,0.2,0.0,0.0,0.0,0.0,0.0,false
+# PA_NAME,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z,enable_uncer
+baseline,0.2,0.0,0.0,0.0,0.0,0.0,false,false
 
 # ===== SINGLE LOSS ABLATION =====
 # Test each loss individually to understand its effect
 
 # L_geo only (depth supervision)
-geo03,0.2,0.3,0.0,0.0,0.0,0.0,false
-geo05,0.2,0.5,0.0,0.0,0.0,0.0,false
-geo07,0.2,0.7,0.0,0.0,0.0,0.0,false
+geo03,0.2,0.3,0.0,0.0,0.0,0.0,false,false
+geo05,0.2,0.5,0.0,0.0,0.0,0.0,false,false
+geo07,0.2,0.7,0.0,0.0,0.0,0.0,false,false
 
 # L_var only (relative depth error)
-var01,0.2,0.0,0.0,0.1,0.0,0.0,false
-var02,0.2,0.0,0.0,0.2,0.0,0.0,false
-var05,0.2,0.0,0.0,0.5,0.0,0.0,false
+var01,0.2,0.0,0.0,0.1,0.0,0.0,false,false
+var02,0.2,0.0,0.0,0.2,0.0,0.0,false,false
+var05,0.2,0.0,0.0,0.5,0.0,0.0,false,false
 
 
 # ===== GEO + ONE OTHER LOSS =====
 # L_geo as base + one additional loss
 
 # geo + var
-geo05var01,0.2,0.5,0.0,0.1,0.0,0.0,false
-geo05var02,0.2,0.5,0.0,0.2,0.0,0.0,false
+geo05var01,0.2,0.5,0.0,0.1,0.0,0.0,false,false
+geo05var02,0.2,0.5,0.0,0.2,0.0,0.0,false,false
 
 # geo + iso
-geo05iso03,0.2,0.5,0.0,0.0,0.3,0.0,false
-geo05iso05,0.2,0.5,0.0,0.0,0.5,0.0,false
+geo05iso03,0.2,0.5,0.0,0.0,0.3,0.0,false,false
+geo05iso05,0.2,0.5,0.0,0.0,0.5,0.0,false,false
 
 # geo + align
-geo05al02,0.2,0.5,0.0,0.0,0.0,0.2,false
-geo05al03,0.2,0.5,0.0,0.0,0.0,0.3,false
+geo05al02,0.2,0.5,0.0,0.0,0.0,0.2,false,false
+geo05al03,0.2,0.5,0.0,0.0,0.0,0.3,false,false
 
 # ===== GEO + TWO LOSSES =====
 # geo + var + align
-geo05var02al02,0.2,0.5,0.0,0.2,0.0,0.2,false
-geo05var02al03,0.2,0.5,0.0,0.2,0.0,0.3,false
+geo05var02al02,0.2,0.5,0.0,0.2,0.0,0.2,false,false
+geo05var02al03,0.2,0.5,0.0,0.2,0.0,0.3,false,false
 
 
 # ===== FULL CG-SLAM STYLE (geo + var + iso + align) =====
-geo05var02iso03al02,0.2,0.5,0.0,0.2,0.3,0.2,false
-geo05var02iso05al03,0.2,0.5,0.0,0.2,0.5,0.3,false
-geo07var02iso03al02,0.2,0.7,0.0,0.2,0.3,0.2,false
+geo05var02iso03al02,0.2,0.5,0.0,0.2,0.3,0.2,false,false
+geo05var02iso05al03,0.2,0.5,0.0,0.2,0.5,0.3,false,false
+geo07var02iso03al02,0.2,0.7,0.0,0.2,0.3,0.2,false,false
+
+# ============================================================================
+# UncertPhoto-SLAM: With Uncertainty Tracking Enabled
+# ============================================================================
+
+# Best CG-SLAM config + Uncertainty tracking
+geo07var02iso03al02_uncer,0.2,0.7,0.0,0.2,0.3,0.2,false,true
+
+# Compare with/without uncertainty on same config
+geo05var02iso03al02_uncer,0.2,0.5,0.0,0.2,0.3,0.2,false,true
+geo05var02iso05al03_uncer,0.2,0.5,0.0,0.2,0.5,0.3,false,true
+
