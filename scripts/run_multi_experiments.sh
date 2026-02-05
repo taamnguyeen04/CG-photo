@@ -126,7 +126,7 @@ echo ""
 
 # Create summary file for all experiments
 MULTI_SUMMARY="${BASE_DIR}/multi_experiments_summary.csv"
-echo "experiment,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z,scene,avg_psnr,avg_ssim,avg_lpips,avg_accuracy,avg_completion,avg_comp_ratio" > "$MULTI_SUMMARY"
+echo "experiment,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z,scene,avg_psnr,avg_ssim,avg_lpips,avg_ate,avg_accuracy,avg_completion,avg_comp_ratio" > "$MULTI_SUMMARY"
 
 # Run each experiment
 EXP_COUNT=0
@@ -153,15 +153,17 @@ for EXP in "${EXPERIMENTS[@]}"; do
     RESULTS_FILE="${BASE_DIR}/results_${PA_NAME}/all_results.csv"
     if [ -f "$RESULTS_FILE" ]; then
         # Calculate averages per scene
+        # Calculate averages per scene (column indices: 3=psnr, 4=ssim, 5=lpips, 6=ate, 7=acc, 8=comp, 9=ratio)
         for SCENE in "${SCENES[@]}"; do
             AVG_PSNR=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$3; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
             AVG_SSIM=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$4; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
             AVG_LPIPS=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$5; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-            AVG_ACC=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$6; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-            AVG_COMP=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$7; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-            AVG_RATIO=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$8; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_ATE=$(awk -F',' -v scene="$SCENE" '$1==scene && $6!="N/A" {sum+=$6; count++} END {if(count>0) printf "%.6f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_ACC=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$7; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_COMP=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$8; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_RATIO=$(awk -F',' -v scene="$SCENE" '$1==scene {sum+=$9; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
             
-            echo "$PA_NAME,$LAMBDA_DSSIM,$LAMBDA_GEO,$LAMBDA_SMOOTH,$LAMBDA_VAR,$LAMBDA_ISO,$LAMBDA_ALIGN,$FLATTEN_Z,$SCENE,$AVG_PSNR,$AVG_SSIM,$AVG_LPIPS,$AVG_ACC,$AVG_COMP,$AVG_RATIO" >> "$MULTI_SUMMARY"
+            echo "$PA_NAME,$LAMBDA_DSSIM,$LAMBDA_GEO,$LAMBDA_SMOOTH,$LAMBDA_VAR,$LAMBDA_ISO,$LAMBDA_ALIGN,$FLATTEN_Z,$SCENE,$AVG_PSNR,$AVG_SSIM,$AVG_LPIPS,$AVG_ATE,$AVG_ACC,$AVG_COMP,$AVG_RATIO" >> "$MULTI_SUMMARY"
         done
     fi
     
@@ -202,8 +204,8 @@ cat >> "$REPORT_FILE" << 'SECTION'
 
 ## Overall Results (Average Across All Scenes)
 
-| Experiment | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Accuracy ↓ | Completion ↓ | Comp.Ratio ↑ |
-|------------|--------|--------|---------|------------|--------------|--------------|
+| Experiment | PSNR ↑ | SSIM ↑ | LPIPS ↓ | ATE ↓ | Accuracy ↓ | Completion ↓ | Comp.Ratio ↑ |
+|------------|--------|--------|---------|-------|------------|--------------|--------------|
 SECTION
 
 # Calculate overall averages for each experiment
@@ -215,11 +217,12 @@ for EXP in "${EXPERIMENTS[@]}"; do
         AVG_PSNR=$(awk -F',' 'NR>1 && $3!="FAILED" {sum+=$3; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
         AVG_SSIM=$(awk -F',' 'NR>1 && $4!="FAILED" {sum+=$4; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
         AVG_LPIPS=$(awk -F',' 'NR>1 && $5!="FAILED" {sum+=$5; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-        AVG_ACC=$(awk -F',' 'NR>1 && $6!="FAILED" {sum+=$6; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-        AVG_COMP=$(awk -F',' 'NR>1 && $7!="FAILED" {sum+=$7; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-        AVG_RATIO=$(awk -F',' 'NR>1 && $8!="FAILED" {sum+=$8; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+        AVG_ATE=$(awk -F',' 'NR>1 && $6!="FAILED" && $6!="N/A" {sum+=$6; count++} END {if(count>0) printf "%.6f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+        AVG_ACC=$(awk -F',' 'NR>1 && $7!="FAILED" {sum+=$7; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+        AVG_COMP=$(awk -F',' 'NR>1 && $8!="FAILED" {sum+=$8; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+        AVG_RATIO=$(awk -F',' 'NR>1 && $9!="FAILED" {sum+=$9; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
         
-        echo "| **$PA_NAME** | $AVG_PSNR | $AVG_SSIM | $AVG_LPIPS | $AVG_ACC | $AVG_COMP | $AVG_RATIO |" >> "$REPORT_FILE"
+        echo "| **$PA_NAME** | $AVG_PSNR | $AVG_SSIM | $AVG_LPIPS | $AVG_ATE | $AVG_ACC | $AVG_COMP | $AVG_RATIO |" >> "$REPORT_FILE"
     fi
 done
 
@@ -233,8 +236,8 @@ SECTION
 for SCENE in "${SCENES[@]}"; do
     echo "### $SCENE" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
-    echo "| Experiment | PSNR | SSIM | LPIPS | Accuracy | Completion | Comp.Ratio |" >> "$REPORT_FILE"
-    echo "|------------|------|------|-------|----------|------------|------------|" >> "$REPORT_FILE"
+    echo "| Experiment | PSNR | SSIM | LPIPS | ATE | Accuracy | Completion | Comp.Ratio |" >> "$REPORT_FILE"
+    echo "|------------|------|------|-------|-----|----------|------------|------------|" >> "$REPORT_FILE"
     
     for EXP in "${EXPERIMENTS[@]}"; do
         IFS=',' read -r PA_NAME LAMBDA_DSSIM LAMBDA_GEO LAMBDA_SMOOTH LAMBDA_VAR LAMBDA_ISO LAMBDA_ALIGN FLATTEN_Z <<< "$EXP"
@@ -244,11 +247,12 @@ for SCENE in "${SCENES[@]}"; do
             AVG_PSNR=$(awk -F',' -v scene="$SCENE" '$1==scene && $3!="FAILED" {sum+=$3; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
             AVG_SSIM=$(awk -F',' -v scene="$SCENE" '$1==scene && $4!="FAILED" {sum+=$4; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
             AVG_LPIPS=$(awk -F',' -v scene="$SCENE" '$1==scene && $5!="FAILED" {sum+=$5; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-            AVG_ACC=$(awk -F',' -v scene="$SCENE" '$1==scene && $6!="FAILED" {sum+=$6; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-            AVG_COMP=$(awk -F',' -v scene="$SCENE" '$1==scene && $7!="FAILED" {sum+=$7; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
-            AVG_RATIO=$(awk -F',' -v scene="$SCENE" '$1==scene && $8!="FAILED" {sum+=$8; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_ATE=$(awk -F',' -v scene="$SCENE" '$1==scene && $6!="FAILED" && $6!="N/A" {sum+=$6; count++} END {if(count>0) printf "%.6f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_ACC=$(awk -F',' -v scene="$SCENE" '$1==scene && $7!="FAILED" {sum+=$7; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_COMP=$(awk -F',' -v scene="$SCENE" '$1==scene && $8!="FAILED" {sum+=$8; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
+            AVG_RATIO=$(awk -F',' -v scene="$SCENE" '$1==scene && $9!="FAILED" {sum+=$9; count++} END {if(count>0) printf "%.2f", sum/count; else print "N/A"}' "$RESULTS_FILE")
             
-            echo "| $PA_NAME | $AVG_PSNR | $AVG_SSIM | $AVG_LPIPS | $AVG_ACC | $AVG_COMP | $AVG_RATIO |" >> "$REPORT_FILE"
+            echo "| $PA_NAME | $AVG_PSNR | $AVG_SSIM | $AVG_LPIPS | $AVG_ATE | $AVG_ACC | $AVG_COMP | $AVG_RATIO |" >> "$REPORT_FILE"
         fi
     done
     echo "" >> "$REPORT_FILE"

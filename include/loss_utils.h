@@ -308,5 +308,43 @@ inline torch::Tensor smoothness_loss(
     return loss_x + loss_y;
 }
 
+/**
+ * @brief Planar Regularization Loss (L_reg) - MonoGS++
+ * 
+ * Encourages Gaussians to become flat disks by minimizing their smallest scale.
+ * This is particularly effective for planar surfaces like walls, tables, and floors.
+ * 
+ * Formula: L_reg = mean(max(floor, min(s)) - floor)
+ * 
+ * When min(s) → floor, the Gaussian becomes a flat 2D disk.
+ * The floor value (default 0.01) prevents complete degeneration while
+ * encouraging extreme flatness.
+ * 
+ * Reference: MonoGS++ - Equation 5
+ * 
+ * @param scales Scaling vectors [N, 3] (in log space from model.scaling_)
+ * @param min_scale_floor Minimum scale threshold (default 0.01)
+ * @param use_log_scales True if scales are in log space (from model)
+ * @return Scalar regularization loss
+ */
+inline torch::Tensor planar_regularization_loss(
+    torch::Tensor& scales,
+    float min_scale_floor = 0.01f,
+    bool use_log_scales = true)
+{
+    // Convert from log space if needed
+    auto s = use_log_scales ? torch::exp(scales) : scales;
+    
+    // Get min scale per Gaussian: [N, 3] → [N]
+    auto s_min = std::get<0>(torch::min(s, /*dim=*/1));
+    
+    // Compute penalty: max(floor, s_min) - floor
+    // When s_min > floor: penalty = s_min - floor (pushes s_min toward floor)
+    // When s_min <= floor: penalty = 0 (already flat enough)
+    auto penalty = torch::clamp_min(s_min, min_scale_floor) - min_scale_floor;
+    
+    return penalty.mean();
+}
+
 }
 

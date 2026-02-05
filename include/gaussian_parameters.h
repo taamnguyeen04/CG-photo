@@ -100,5 +100,6 @@ public:
     float lambda_var_ = 0.0f;        // L_var: Depth variance
     float lambda_iso_ = 0.0f;        // L_iso: Gaussian isotropy
     float lambda_align_ = 0.0f;      // L_align: Depth alignment
+    float lambda_reg_ = 0.0f;        // L_reg: Planar regularization (MonoGS++)
     int gradient_log_interval_ = 0;  // Debug: gradient conflict analysis interval (0=disabled)
 };

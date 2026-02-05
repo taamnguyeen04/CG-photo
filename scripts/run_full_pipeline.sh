@@ -62,7 +62,7 @@ mkdir -p "${BASE_DIR}/results_${PA_NAME}"
 
 # Only write header if CSV doesn't exist or is empty
 if [ ! -f "$SUMMARY_ALL" ] || [ ! -s "$SUMMARY_ALL" ]; then
-    echo "scene,run,psnr,ssim,lpips,accuracy,completion,comp_ratio,chamfer" > "$SUMMARY_ALL"
+    echo "scene,run,psnr,ssim,lpips,ate_rmse,accuracy,completion,comp_ratio,chamfer" > "$SUMMARY_ALL"
 fi
 echo "# Failed runs log - $(date)" >> "$FAILED_LOG"
 
@@ -97,7 +97,7 @@ run_single_scene() {
         no_viewer; then
         echo "[X] TRAINING FAILED: ${SCENE} run ${RUN}"
         echo "${SCENE},${RUN},FAILED,training" >> "$FAILED_LOG"
-        echo "${SCENE},${RUN},FAILED,FAILED,FAILED,FAILED,FAILED,FAILED" >> "$SUMMARY_ALL"
+        echo "${SCENE},${RUN},FAILED,FAILED,FAILED,FAILED,FAILED,FAILED,FAILED,FAILED" >> "$SUMMARY_ALL"
         return 1
     fi
     
@@ -107,10 +107,16 @@ run_single_scene() {
     source "${VENV_PATH}/bin/activate"
     python run.py "../results_${PA_NAME}/${SCENE}_run${RUN}" "${GT_DATA_DIR}"
     
-    # Calculate metrics
+    # Calculate photometric metrics
     PSNR=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/psnr.txt")
     SSIM=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/ssim.txt")
     LPIPS=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/lpips.txt")
+    
+    # Extract ATE RMSE from metrics_traj.txt (line 8 contains "rmse <value>")
+    ATE_RMSE="N/A"
+    if [ -f "${RESULT_DIR}/metrics_traj.txt" ]; then
+        ATE_RMSE=$(sed -n '8p' "${RESULT_DIR}/metrics_traj.txt" | awk '{printf "%.6f", $2}')
+    fi
     
     # Step 3: Generate Mesh (using cameras.json for correct coordinate alignment)
     echo "--- Generating Mesh ---"
@@ -158,11 +164,11 @@ run_single_scene() {
     # Print summary for this run
     echo ""
     echo "--- ${SCENE} Run ${RUN} Results ---"
-    echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS}"
+    echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS} | ATE: ${ATE_RMSE}m"
     echo "Acc: ${ACC}cm | Comp: ${COMP}cm | Chamfer: ${CHAMFER}cm | Ratio: ${COMP_RATIO}%"
     
     # Append to CSV
-    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ACC},${COMP},${COMP_RATIO},${CHAMFER}" >> "$SUMMARY_ALL"
+    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${ACC},${COMP},${COMP_RATIO},${CHAMFER}" >> "$SUMMARY_ALL"
     
     # Save individual summary
     cat > "${RESULT_DIR}/summary.txt" << EOF
@@ -179,6 +185,7 @@ lambda_align: ${LAMBDA_ALIGN}
 PSNR: ${PSNR}
 SSIM: ${SSIM}
 LPIPS: ${LPIPS}
+ATE_RMSE: ${ATE_RMSE}
 Accuracy: ${ACC}
 Completion: ${COMP}
 Completion_Ratio: ${COMP_RATIO}

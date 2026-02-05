@@ -75,11 +75,12 @@ Optimization.densify_until_iter: 15000
 Optimization.densify_grad_threshold: 0.001
 
 # Loss Weights (Depth-Photo-SLAM)
-Optimization.lambda_geo: 0.5       # L_geo: Sensor depth L1 loss
+Optimization.lambda_geo: 0.7       # L_geo: Sensor depth L1 loss
 Optimization.lambda_smooth: 0   # L_smooth: Edge-aware smoothness
-Optimization.lambda_var: 0.2       # L_var: Depth variance (uncertainty)
-Optimization.lambda_iso: 0.5       # L_iso: Gaussian isotropy (anti-needle)
-Optimization.lambda_align: 0.3    # L_align: Depth alpha-median alignment
+Optimization.lambda_var: 0.0       # L_var: Depth variance (uncertainty)
+Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
+Optimization.lambda_align: 0.0    # L_align: Depth alpha-median alignment
+Optimization.lambda_reg: 0.7       # L_reg: Planar regularization (MonoGS++)
 Optimization.gradient_log_interval: 0  # Debug: gradient conflict log every N iters (0=off, 100=recommended)
 
 #--------------------------------------------------------------------------------------------

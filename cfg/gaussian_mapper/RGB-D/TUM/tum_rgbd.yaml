@@ -79,6 +79,7 @@ Optimization.lambda_smooth: 0.01   # L_smooth: Edge-aware smoothness
 Optimization.lambda_var: 0.0       # L_var: Depth variance (uncertainty)
 Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
 Optimization.lambda_align: 0.0     # L_align: Depth alpha-median alignment
+Optimization.lambda_reg: 0.1       # L_reg: Planar regularization (MonoGS++)
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters
