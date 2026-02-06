@@ -379,6 +379,10 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         opt_params_.lambda_align_ = settings_file["Optimization.lambda_align"].operator float();
     if (!settings_file["Optimization.lambda_reg"].empty())
         opt_params_.lambda_reg_ = settings_file["Optimization.lambda_reg"].operator float();
+    if (!settings_file["Optimization.lambda_g1"].empty())
+        opt_params_.lambda_g1_ = settings_file["Optimization.lambda_g1"].operator float();
+    if (!settings_file["Optimization.lambda_g2"].empty())
+        opt_params_.lambda_g2_ = settings_file["Optimization.lambda_g2"].operator float();
     if (!settings_file["Optimization.gradient_log_interval"].empty())
         opt_params_.gradient_log_interval_ = settings_file["Optimization.gradient_log_interval"].operator int();
 
@@ -783,6 +787,8 @@ void GaussianMapper::trainForOneIteration()
     float lambda_iso = opt_params_.lambda_iso_;
     float lambda_smooth = opt_params_.lambda_smooth_;
     float lambda_reg = opt_params_.lambda_reg_;
+    float lambda_g1 = opt_params_.lambda_g1_;
+    float lambda_g2 = opt_params_.lambda_g2_;
     
     // Depth-Photo-SLAM: Compute depth-aware losses (ONLY if lambda > 0)
     torch::Tensor L_align = torch::zeros(1, torch::TensorOptions().device(device_type_));
@@ -791,6 +797,8 @@ void GaussianMapper::trainForOneIteration()
     torch::Tensor L_smooth = torch::zeros(1, torch::TensorOptions().device(device_type_));
     torch::Tensor L_iso = torch::zeros(1, torch::TensorOptions().device(device_type_));
     torch::Tensor L_reg = torch::zeros(1, torch::TensorOptions().device(device_type_));
+    torch::Tensor L_g1 = torch::zeros(1, torch::TensorOptions().device(device_type_));
+    torch::Tensor L_g2 = torch::zeros(1, torch::TensorOptions().device(device_type_));
     
     // L_align: Alignment loss (only if enabled)
     if (lambda_align > 0.0f) {
@@ -880,6 +888,16 @@ void GaussianMapper::trainForOneIteration()
         L_reg = loss_utils::planar_regularization_loss(gaussians_->scaling_, /*min_scale_floor=*/0.01f, /*use_log_scales=*/true);
     }
     
+    // L_g1: First-order gradient loss (2D-3DGS) - preserves edges
+    if (lambda_g1 > 0.0f) {
+        L_g1 = loss_utils::first_order_gradient_loss(masked_image, gt_image, device_type_);
+    }
+    
+    // L_g2: Second-order gradient loss (2D-3DGS) - preserves corners/curvature
+    if (lambda_g2 > 0.0f) {
+        L_g2 = loss_utils::second_order_gradient_loss(masked_image, gt_image, device_type_);
+    }
+    
     // Combine losses with weights
     auto loss = (1.0 - lambda_dssim) * Ll1
                 + lambda_dssim * (1.0 - loss_utils::ssim(masked_image, gt_image, device_type_))
@@ -888,7 +906,9 @@ void GaussianMapper::trainForOneIteration()
                 + lambda_var * L_var
                 + lambda_smooth * L_smooth
                 + lambda_iso * L_iso
-                + lambda_reg * L_reg;
+                + lambda_reg * L_reg
+                + lambda_g1 * L_g1
+                + lambda_g2 * L_g2;
     
     // ========================================================================
     // LOSS COMPONENT LOGGING - Log individual loss values for visualization
@@ -948,6 +968,8 @@ void GaussianMapper::trainForOneIteration()
         std::cout << "  L_smooth value = " << L_smooth.item<float>() << std::endl;
         std::cout << "  L_iso value = " << L_iso.item<float>() << std::endl;
         std::cout << "  L_reg value = " << L_reg.item<float>() << std::endl;
+        std::cout << "  L_g1 value = " << L_g1.item<float>() << std::endl;
+        std::cout << "  L_g2 value = " << L_g2.item<float>() << std::endl;
         // ====== END DEBUG ======
         
         // Compute individual weighted losses
@@ -959,12 +981,14 @@ void GaussianMapper::trainForOneIteration()
         auto loss_smooth = lambda_smooth * L_smooth;
         auto loss_iso = lambda_iso * L_iso;
         auto loss_reg = lambda_reg * L_reg;
+        auto loss_g1 = lambda_g1 * L_g1;
+        auto loss_g2 = lambda_g2 * L_g2;
         
         // Store gradients for xyz parameter
         std::vector<torch::Tensor> grads_xyz;
         std::vector<torch::Tensor> grads_scaling;  // For L_iso, L_reg
-        std::vector<std::string> names = {"L1", "DSSIM", "L_geo", "L_align", "L_var", "L_smooth", "L_iso", "L_reg"};
-        std::vector<torch::Tensor> losses_vec = {loss_l1, loss_dssim, loss_geo, loss_align, loss_var, loss_smooth, loss_iso, loss_reg};
+        std::vector<std::string> names = {"L1", "DSSIM", "L_geo", "L_align", "L_var", "L_smooth", "L_iso", "L_reg", "L_g1", "L_g2"};
+        std::vector<torch::Tensor> losses_vec = {loss_l1, loss_dssim, loss_geo, loss_align, loss_var, loss_smooth, loss_iso, loss_reg, loss_g1, loss_g2};
         
         for (size_t i = 0; i < losses_vec.size(); ++i) {
             // Zero gradients

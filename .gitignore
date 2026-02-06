@@ -119,7 +119,7 @@ env/
 # Dataset directories (if any)
 datasets/
 data/
-
+/test.py
 # Temporary files
 *.tmp
 *.temp

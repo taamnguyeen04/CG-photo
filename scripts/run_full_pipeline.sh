@@ -1,64 +1,116 @@
 #!/bin/bash
 # Full pipeline: Train + Evaluate Photo-SLAM on Replica (Multiple scenes, multiple runs)
 # 
+# Supports: RGB-D, Monocular, Stereo modes
+#
 # Usage:
-#   ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] [scene3] ...
+#   ./run_full_pipeline.sh <mode> <pa_name> <num_runs> <scene1> [scene2] ...
+#
+# Modes: rgbd, mono, stereo
 #
 # Examples:
-#   ./run_full_pipeline.sh pa9 3 office0                    # office0 x 3 runs
-#   ./run_full_pipeline.sh pa10 2 office0 room0 room1       # 3 scenes x 2 runs each
-#   ./run_full_pipeline.sh pa11 1 office0 office1 office2 office3 office4 room0 room1 room2  # all 8 scenes x 1 run
+#   ./run_full_pipeline.sh rgbd pa9 2 office0 room0       # RGB-D mode
+#   ./run_full_pipeline.sh mono baseline 1 office0       # Monocular mode
+#   ./run_full_pipeline.sh stereo pa1 1 office0          # Stereo mode
 
-
-# Don't use set -e, we handle errors manually
 
 # Parse arguments
-PA_NAME="${1:?Usage: ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] ...}"
-NUM_RUNS="${2:?Missing number of runs}"
-shift 2
+MODE="${1:?Usage: ./run_full_pipeline.sh <mode> <pa_name> <num_runs> <scene1> [scene2] ...}"
+PA_NAME="${2:?Missing PA name}"
+NUM_RUNS="${3:?Missing number of runs}"
+shift 3
 SCENES=("$@")
 
 if [ ${#SCENES[@]} -eq 0 ]; then
     echo "Error: No scenes specified!"
-    echo "Usage: ./run_full_pipeline.sh <pa_name> <num_runs> <scene1> [scene2] ..."
+    echo "Usage: ./run_full_pipeline.sh <mode> <pa_name> <num_runs> <scene1> [scene2] ..."
     exit 1
 fi
 
-# Paths
+# Validate mode
+MODE=$(echo "$MODE" | tr '[:upper:]' '[:lower:]')
+if [[ ! "$MODE" =~ ^(rgbd|mono|stereo)$ ]]; then
+    echo "Error: Invalid mode '$MODE'. Must be: rgbd, mono, stereo"
+    exit 1
+fi
+
+# Paths - Replica dataset
 BASE_DIR="/media/tam/DATA/3D/CG-photo"
 GT_DATA_BASE="/media/tam/DATA/data/Replica"
 GT_MESH_BASE="/media/tam/DATA/data/Replica/cull_replica_mesh"
 VENV_PATH="/media/tam/DATA/3D/Photo-SLAM/venv"
 TSDF_ENV_PATH="${BASE_DIR}/scripts/tsdf_env"
-CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml"
+DATASET="replica"
 
 cd "$BASE_DIR"
 
+# Set config and binary based on mode
+case "$MODE" in
+    rgbd)
+        MODE_UPPER="RGB-D"
+        CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml"
+        ORB_CONFIG_BASE="${BASE_DIR}/cfg/ORB_SLAM3/RGB-D/Replica"
+        BINARY="./bin/replica_rgbd"
+        DEPTH_SCALE=6553.5
+        ;;
+    mono)
+        MODE_UPPER="Monocular"
+        CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml"
+        ORB_CONFIG_BASE="${BASE_DIR}/cfg/ORB_SLAM3/Monocular/Replica"
+        BINARY="./bin/replica_mono"
+        DEPTH_SCALE=6553.5
+        ;;
+    stereo)
+        MODE_UPPER="Stereo"
+        CONFIG_FILE="${BASE_DIR}/cfg/gaussian_mapper/Stereo/Replica/replica_stereo.yaml"
+        ORB_CONFIG_BASE="${BASE_DIR}/cfg/ORB_SLAM3/Stereo/Replica"
+        BINARY="./bin/replica_stereo"
+        DEPTH_SCALE=6553.5
+        ;;
+esac
+
+# Check if binary exists
+if [ ! -f "$BINARY" ]; then
+    echo "Error: Binary not found: $BINARY"
+    echo "Available binaries:"
+    ls -1 ./bin/ 2>/dev/null
+    exit 1
+fi
+
+# Check if config exists
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Config file not found: $CONFIG_FILE"
+    exit 1
+fi
+
 # Extract loss weights from config
-LAMBDA_GEO=$(grep "Optimization.lambda_geo:" "$CONFIG_FILE" | awk '{print $2}')
-LAMBDA_SMOOTH=$(grep "Optimization.lambda_smooth:" "$CONFIG_FILE" | awk '{print $2}')
-LAMBDA_VAR=$(grep "Optimization.lambda_var:" "$CONFIG_FILE" | awk '{print $2}')
-LAMBDA_ISO=$(grep "Optimization.lambda_iso:" "$CONFIG_FILE" | awk '{print $2}')
-LAMBDA_ALIGN=$(grep "Optimization.lambda_align:" "$CONFIG_FILE" | awk '{print $2}')
+LAMBDA_GEO=$(grep "Optimization.lambda_geo:" "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
+LAMBDA_SMOOTH=$(grep "Optimization.lambda_smooth:" "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
+LAMBDA_VAR=$(grep "Optimization.lambda_var:" "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
+LAMBDA_ISO=$(grep "Optimization.lambda_iso:" "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
+LAMBDA_ALIGN=$(grep "Optimization.lambda_align:" "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
 
 echo "=============================================="
 echo "  Full Pipeline: ${PA_NAME}"
+echo "  Mode: ${MODE_UPPER}"
 echo "  Scenes: ${SCENES[*]}"
 echo "  Runs per scene: ${NUM_RUNS}"
 echo "=============================================="
 echo ""
 echo "=== LOSS WEIGHTS (from config) ==="
-echo "lambda_geo:    ${LAMBDA_GEO}"
-echo "lambda_smooth: ${LAMBDA_SMOOTH}"
-echo "lambda_var:    ${LAMBDA_VAR}"
-echo "lambda_iso:    ${LAMBDA_ISO}"
-echo "lambda_align:  ${LAMBDA_ALIGN}"
+echo "lambda_geo:    ${LAMBDA_GEO:-0.0}"
+echo "lambda_smooth: ${LAMBDA_SMOOTH:-0.0}"
+echo "lambda_var:    ${LAMBDA_VAR:-0.0}"
+echo "lambda_iso:    ${LAMBDA_ISO:-0.0}"
+echo "lambda_align:  ${LAMBDA_ALIGN:-0.0}"
 echo ""
 
-# Create results summary file (append mode - only add header if file doesn't exist)
-SUMMARY_ALL="${BASE_DIR}/results_${PA_NAME}/all_results.csv"
-FAILED_LOG="${BASE_DIR}/results_${PA_NAME}/failed_runs.txt"
-mkdir -p "${BASE_DIR}/results_${PA_NAME}"
+# Create results directory with organized structure: results/{dataset}/{mode}/{pa_name}
+RESULTS_BASE="${BASE_DIR}/results/${DATASET}/${MODE}"
+RESULTS_DIR="${RESULTS_BASE}/${PA_NAME}"
+SUMMARY_ALL="${RESULTS_DIR}/all_results.csv"
+FAILED_LOG="${RESULTS_DIR}/failed_runs.txt"
+mkdir -p "${RESULTS_DIR}"
 
 # Only write header if CSV doesn't exist or is empty
 if [ ! -f "$SUMMARY_ALL" ] || [ ! -s "$SUMMARY_ALL" ]; then
@@ -70,14 +122,23 @@ echo "# Failed runs log - $(date)" >> "$FAILED_LOG"
 run_single_scene() {
     local SCENE=$1
     local RUN=$2
-    local RESULT_DIR="${BASE_DIR}/results_${PA_NAME}/${SCENE}_run${RUN}"
+    local RESULT_DIR="${RESULTS_DIR}/${SCENE}_run${RUN}"
     local GT_DATA_DIR="${GT_DATA_BASE}/${SCENE}"
     local GT_MESH="${GT_MESH_BASE}/${SCENE}.ply"
+    local ORB_CONFIG="${ORB_CONFIG_BASE}/${SCENE}.yaml"
     
     echo ""
     echo "======================================================"
     echo "  Running: ${SCENE} (Run ${RUN}/${NUM_RUNS})"
+    echo "  Mode: ${MODE_UPPER}"
     echo "======================================================"
+    
+    # Check ORB config
+    if [ ! -f "$ORB_CONFIG" ]; then
+        echo "[X] ORB config not found: $ORB_CONFIG"
+        echo "${SCENE},${RUN},FAILED,orb_config_missing" >> "$FAILED_LOG"
+        return 1
+    fi
     
     # Delete existing results
     if [ -d "$RESULT_DIR" ]; then
@@ -88,12 +149,12 @@ run_single_scene() {
     # Step 1: Training
     echo "--- Training ---"
     cd "$BASE_DIR"
-    if ! ./bin/replica_rgbd \
+    if ! $BINARY \
         ORB-SLAM3/Vocabulary/ORBvoc.txt \
-        cfg/ORB_SLAM3/RGB-D/Replica/${SCENE}.yaml \
-        cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
+        "$ORB_CONFIG" \
+        "$CONFIG_FILE" \
         "${GT_DATA_DIR}" \
-        "results_${PA_NAME}/${SCENE}_run${RUN}" \
+        "results/${DATASET}/${MODE}/${PA_NAME}/${SCENE}_run${RUN}" \
         no_viewer; then
         echo "[X] TRAINING FAILED: ${SCENE} run ${RUN}"
         echo "${SCENE},${RUN},FAILED,training" >> "$FAILED_LOG"
@@ -105,12 +166,12 @@ run_single_scene() {
     echo "--- Photometric Evaluation ---"
     cd "${BASE_DIR}/Photo-SLAM-eval"
     source "${VENV_PATH}/bin/activate"
-    python run.py "../results_${PA_NAME}/${SCENE}_run${RUN}" "${GT_DATA_DIR}"
+    python run.py "${RESULT_DIR}" "${GT_DATA_DIR}"
     
     # Calculate photometric metrics
-    PSNR=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/psnr.txt")
-    SSIM=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/ssim.txt")
-    LPIPS=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/lpips.txt")
+    PSNR=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/psnr.txt" 2>/dev/null || echo "N/A")
+    SSIM=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/ssim.txt" 2>/dev/null || echo "N/A")
+    LPIPS=$(awk '{sum+=$1; count++} END {printf "%.4f", sum/count}' "${RESULT_DIR}/lpips.txt" 2>/dev/null || echo "N/A")
     
     # Extract ATE RMSE from metrics_traj.txt (line 8 contains "rmse <value>")
     ATE_RMSE="N/A"
@@ -143,7 +204,7 @@ run_single_scene() {
         --depth_dir "$DEPTH_DIR" \
         --output "${RESULT_DIR}/meshes/${SCENE}_json_aligned.ply" \
         --voxel_size 0.01 \
-        --depth_scale 6553.5 \
+        --depth_scale $DEPTH_SCALE \
         --max_depth 10.0 \
         --gt_traj "$GT_TRAJ"
     MESH_FILE="${RESULT_DIR}/meshes/${SCENE}_json_aligned.ply"
@@ -173,13 +234,14 @@ run_single_scene() {
     # Save individual summary
     cat > "${RESULT_DIR}/summary.txt" << EOF
 PA: ${PA_NAME}, Scene: ${SCENE}, Run: ${RUN}
+Mode: ${MODE_UPPER}
 
 # Loss Weights
-lambda_geo: ${LAMBDA_GEO}
-lambda_smooth: ${LAMBDA_SMOOTH}
-lambda_var: ${LAMBDA_VAR}
-lambda_iso: ${LAMBDA_ISO}
-lambda_align: ${LAMBDA_ALIGN}
+lambda_geo: ${LAMBDA_GEO:-0.0}
+lambda_smooth: ${LAMBDA_SMOOTH:-0.0}
+lambda_var: ${LAMBDA_VAR:-0.0}
+lambda_iso: ${LAMBDA_ISO:-0.0}
+lambda_align: ${LAMBDA_ALIGN:-0.0}
 
 # Metrics
 PSNR: ${PSNR}
@@ -212,7 +274,7 @@ done
 cd "$BASE_DIR"
 echo ""
 echo "=============================================="
-echo "  ALL RESULTS: ${PA_NAME}"
+echo "  ALL RESULTS: ${PA_NAME} (${MODE_UPPER})"
 echo "=============================================="
 echo ""
 cat "$SUMMARY_ALL" | column -t -s','

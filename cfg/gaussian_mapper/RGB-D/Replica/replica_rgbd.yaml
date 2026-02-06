@@ -80,7 +80,9 @@ Optimization.lambda_smooth: 0   # L_smooth: Edge-aware smoothness
 Optimization.lambda_var: 0.0       # L_var: Depth variance (uncertainty)
 Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
 Optimization.lambda_align: 0.0    # L_align: Depth alpha-median alignment
-Optimization.lambda_reg: 0.7       # L_reg: Planar regularization (MonoGS++)
+Optimization.lambda_reg: 0.0       # L_reg: Planar regularization (MonoGS++)
+Optimization.lambda_g1: 0.0        # L_g1: First-order gradient loss (2D-3DGS)
+Optimization.lambda_g2: 0.0        # L_g2: Second-order gradient loss (2D-3DGS)
 Optimization.gradient_log_interval: 0  # Debug: gradient conflict log every N iters (0=off, 100=recommended)
 
 #--------------------------------------------------------------------------------------------

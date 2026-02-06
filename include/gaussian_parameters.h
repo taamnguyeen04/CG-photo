@@ -101,5 +101,7 @@ public:
     float lambda_iso_ = 0.0f;        // L_iso: Gaussian isotropy
     float lambda_align_ = 0.0f;      // L_align: Depth alignment
     float lambda_reg_ = 0.0f;        // L_reg: Planar regularization (MonoGS++)
+    float lambda_g1_ = 0.0f;         // L_g1: First-order gradient loss (2D-3DGS)
+    float lambda_g2_ = 0.0f;         // L_g2: Second-order gradient loss (2D-3DGS)
     int gradient_log_interval_ = 0;  // Debug: gradient conflict analysis interval (0=disabled)
 };

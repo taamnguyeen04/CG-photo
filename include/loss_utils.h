@@ -346,5 +346,124 @@ inline torch::Tensor planar_regularization_loss(
     return penalty.mean();
 }
 
+/**
+ * @brief First-Order Image Gradient Loss (L_g1) - 2D-3DGS Paper
+ * 
+ * Penalizes differences in first-order image gradients between rendered and GT.
+ * This helps preserve sharp edges in the reconstruction.
+ * 
+ * Formula: L_g1 = ||∇I - ∇Î||₁
+ * 
+ * Uses Sobel operator for gradient computation.
+ * 
+ * Reference: 2D-3DGS Paper - Equation 10
+ * 
+ * @param rendered Rendered image [B, C, H, W] or [C, H, W]
+ * @param gt Ground truth image [B, C, H, W] or [C, H, W]
+ * @param device_type Device type (CUDA/CPU)
+ * @return Scalar L1 gradient loss
+ */
+inline torch::Tensor first_order_gradient_loss(
+    torch::Tensor& rendered,
+    torch::Tensor& gt,
+    torch::DeviceType device_type = torch::kCUDA)
+{
+    // Ensure 4D input [B, C, H, W]
+    auto img1 = rendered.dim() == 3 ? rendered.unsqueeze(0) : rendered;
+    auto img2 = gt.dim() == 3 ? gt.unsqueeze(0) : gt;
+    
+    int64_t channels = img1.size(1);
+    
+    // Sobel kernels for gradient computation
+    // Sobel X: detects vertical edges
+    auto sobel_x = torch::tensor({
+        {-1.0f, 0.0f, 1.0f},
+        {-2.0f, 0.0f, 2.0f},
+        {-1.0f, 0.0f, 1.0f}
+    }, torch::TensorOptions().device(device_type).dtype(torch::kFloat32));
+    
+    // Sobel Y: detects horizontal edges
+    auto sobel_y = torch::tensor({
+        {-1.0f, -2.0f, -1.0f},
+        { 0.0f,  0.0f,  0.0f},
+        { 1.0f,  2.0f,  1.0f}
+    }, torch::TensorOptions().device(device_type).dtype(torch::kFloat32));
+    
+    // Reshape for conv2d: [out_channels, in_channels/groups, kH, kW]
+    // For depthwise conv with groups=channels, we need [channels, 1, kH, kW]
+    sobel_x = sobel_x.unsqueeze(0).unsqueeze(0).repeat({channels, 1, 1, 1});
+    sobel_y = sobel_y.unsqueeze(0).unsqueeze(0).repeat({channels, 1, 1, 1});
+    
+    // Compute gradients for rendered image
+    auto grad_x1 = torch::nn::functional::conv2d(img1, sobel_x, 
+        torch::nn::functional::Conv2dFuncOptions().padding(1).groups(channels));
+    auto grad_y1 = torch::nn::functional::conv2d(img1, sobel_y, 
+        torch::nn::functional::Conv2dFuncOptions().padding(1).groups(channels));
+    
+    // Compute gradients for GT image
+    auto grad_x2 = torch::nn::functional::conv2d(img2, sobel_x, 
+        torch::nn::functional::Conv2dFuncOptions().padding(1).groups(channels));
+    auto grad_y2 = torch::nn::functional::conv2d(img2, sobel_y, 
+        torch::nn::functional::Conv2dFuncOptions().padding(1).groups(channels));
+    
+    // L1 loss on gradient differences
+    auto loss_x = torch::abs(grad_x1 - grad_x2).mean();
+    auto loss_y = torch::abs(grad_y1 - grad_y2).mean();
+    
+    return loss_x + loss_y;
 }
+
+/**
+ * @brief Second-Order Image Gradient Loss (L_g2) - 2D-3DGS Paper
+ * 
+ * Penalizes differences in second-order image gradients (curvature) between 
+ * rendered and GT. This helps preserve corners and fine geometric details.
+ * 
+ * Formula: L_g2 = ||∇²I - ∇²Î||₁
+ * 
+ * Uses Laplacian operator for second-order gradient computation.
+ * 
+ * Reference: 2D-3DGS Paper - Equation 10
+ * 
+ * @param rendered Rendered image [B, C, H, W] or [C, H, W]
+ * @param gt Ground truth image [B, C, H, W] or [C, H, W]
+ * @param device_type Device type (CUDA/CPU)
+ * @return Scalar L1 Laplacian loss
+ */
+inline torch::Tensor second_order_gradient_loss(
+    torch::Tensor& rendered,
+    torch::Tensor& gt,
+    torch::DeviceType device_type = torch::kCUDA)
+{
+    // Ensure 4D input [B, C, H, W]
+    auto img1 = rendered.dim() == 3 ? rendered.unsqueeze(0) : rendered;
+    auto img2 = gt.dim() == 3 ? gt.unsqueeze(0) : gt;
+    
+    int64_t channels = img1.size(1);
+    
+    // Laplacian kernel for second-order gradient
+    // Standard discrete Laplacian: detects curvature and corners
+    auto laplacian = torch::tensor({
+        {0.0f,  1.0f, 0.0f},
+        {1.0f, -4.0f, 1.0f},
+        {0.0f,  1.0f, 0.0f}
+    }, torch::TensorOptions().device(device_type).dtype(torch::kFloat32));
+    
+    // Reshape for depthwise conv: [channels, 1, kH, kW]
+    laplacian = laplacian.unsqueeze(0).unsqueeze(0).repeat({channels, 1, 1, 1});
+    
+    // Compute Laplacian for rendered image
+    auto lap1 = torch::nn::functional::conv2d(img1, laplacian, 
+        torch::nn::functional::Conv2dFuncOptions().padding(1).groups(channels));
+    
+    // Compute Laplacian for GT image
+    auto lap2 = torch::nn::functional::conv2d(img2, laplacian, 
+        torch::nn::functional::Conv2dFuncOptions().padding(1).groups(channels));
+    
+    // L1 loss on Laplacian differences
+    return torch::abs(lap1 - lap2).mean();
+}
+
+}
+
 
