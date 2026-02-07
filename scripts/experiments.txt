@@ -1,140 +1,61 @@
 # ============================================================================
-# Photo-SLAM / CG-SLAM Loss Ablation Study
+# MONOCULAR EXPERIMENTS FOR REPLICA DATASET
 # ============================================================================
 # Format: PA_NAME,lambda_dssim,lambda_geo,lambda_smooth,lambda_var,lambda_iso,lambda_align,flatten_z,lambda_g1,lambda_g2,lambda_reg
 #
-# Naming Convention:
-#   geo = lambda_geo, var = lambda_var, iso = lambda_iso, al = lambda_align
-#   g1 = lambda_g1 (first-order gradient), g2 = lambda_g2 (second-order gradient)
-#   reg = lambda_reg (planar regularization)
-#   Number = lambda value × 10 (e.g., 05 = 0.5, 02 = 0.2, 01 = 0.1)
-#   Example: geo05g101 = lambda_geo=0.5, lambda_g1=0.1
-#
-# All experiments use: lambda_dssim=0.2, lambda_smooth=0, flatten_z=false (3DGS)
-#
-# ============================================================================
-# RGB-D EXPERIMENTS (có GT depth - sử dụng geo, var)
+# Naming: iso=lambda_iso, al=lambda_align, g1=lambda_g1, g2=lambda_g2, reg=lambda_reg
+# Number = lambda × 10 (01=0.1, 03=0.3, 05=0.5)
 # ============================================================================
 
-# ===== BASELINE: No geometric loss =====
-baseline,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.0,0.0
+# ===== BASELINE =====
+mono_base,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.0,0.0
 
-# ===== SINGLE LOSS ABLATION =====
-# Test each loss individually to understand its effect
-
-# L_geo only (depth supervision) - CHỈ DÙNG VỚI RGB-D
-geo03,0.2,0.3,0.0,0.0,0.0,0.0,false,0.0,0.0,0.0
-geo05,0.2,0.5,0.0,0.0,0.0,0.0,false,0.0,0.0,0.0
-geo07,0.2,0.7,0.0,0.0,0.0,0.0,false,0.0,0.0,0.0
-
-# L_var only (relative depth error) - CHỈ DÙNG VỚI RGB-D
-var01,0.2,0.0,0.0,0.1,0.0,0.0,false,0.0,0.0,0.0
-var02,0.2,0.0,0.0,0.2,0.0,0.0,false,0.0,0.0,0.0
-var05,0.2,0.0,0.0,0.5,0.0,0.0,false,0.0,0.0,0.0
-
-
-# ===== GEO + ONE OTHER LOSS =====
-# L_geo as base + one additional loss
-
-# geo + var
-geo05var01,0.2,0.5,0.0,0.1,0.0,0.0,false,0.0,0.0,0.0
-geo05var02,0.2,0.5,0.0,0.2,0.0,0.0,false,0.0,0.0,0.0
-
-# geo + iso
-geo05iso03,0.2,0.5,0.0,0.0,0.3,0.0,false,0.0,0.0,0.0
-geo05iso05,0.2,0.5,0.0,0.0,0.5,0.0,false,0.0,0.0,0.0
-
-# geo + align
-geo05al02,0.2,0.5,0.0,0.0,0.0,0.2,false,0.0,0.0,0.0
-geo05al03,0.2,0.5,0.0,0.0,0.0,0.3,false,0.0,0.0,0.0
-
-# ===== GEO + TWO LOSSES =====
-# geo + var + align
-geo05var02al02,0.2,0.5,0.0,0.2,0.0,0.2,false,0.0,0.0,0.0
-geo05var02al03,0.2,0.5,0.0,0.2,0.0,0.3,false,0.0,0.0,0.0
-
-
-# ===== FULL CG-SLAM STYLE (geo + var + iso + align) =====
-geo05var02iso03al02,0.2,0.5,0.0,0.2,0.3,0.2,false,0.0,0.0,0.0
-geo05var02iso05al03,0.2,0.5,0.0,0.2,0.5,0.3,false,0.0,0.0,0.0
-geo07var02iso03al02,0.2,0.7,0.0,0.2,0.3,0.2,false,0.0,0.0,0.0
-
-# ===== GRADIENT LOSSES (2D-3DGS) =====
-# L_g1 only (first-order gradient - edges)
-geo07g101,0.2,0.7,0.0,0.0,0.0,0.0,false,0.1,0.0,0.0
-geo07g105,0.2,0.7,0.0,0.0,0.0,0.0,false,0.5,0.0,0.0
-
-# L_g2 only (second-order gradient - corners/curvature)
-geo07g201,0.2,0.7,0.0,0.0,0.0,0.0,false,0.0,0.1,0.0
-geo07g205,0.2,0.7,0.0,0.0,0.0,0.0,false,0.0,0.5,0.0
-
-# L_g1 + L_g2 (both gradient losses)
-geo07g101g201,0.2,0.7,0.0,0.0,0.0,0.0,false,0.1,0.1,0.0
-geo07g105g205,0.2,0.7,0.0,0.0,0.0,0.0,false,0.5,0.5,0.0
-geo07g101g205,0.2,0.7,0.0,0.0,0.0,0.0,false,0.1,0.5,0.0
-
-# ===== PLANAR REGULARIZATION (MonoGS++) =====
-# L_reg only - encourages flat Gaussians on surfaces
-geo07reg01,0.2,0.7,0.0,0.0,0.0,0.0,false,0.0,0.0,0.1
-geo07reg05,0.2,0.7,0.0,0.0,0.0,0.0,false,0.0,0.0,0.5
-
-# L_reg + gradient losses
-geo07g101g201reg01,0.2,0.7,0.0,0.0,0.0,0.0,false,0.1,0.1,0.1
-
-# ============================================================================
-# MONOCULAR EXPERIMENTS (không có GT depth)
-# CHỈ SỬ DỤNG CÁC LOSS KHÔNG CẦN GT DEPTH:
-#   - L1 + DSSIM (photometric)
-#   - lambda_iso (isotropic constraint on Gaussian covariance)
-#   - lambda_align (surface alignment)
-#   - lambda_g1, lambda_g2 (gradient losses on rendered image)
-#   - lambda_smooth (smoothness on rendered depth)
-#   - lambda_reg (planar regularization)
-# 
-# KHÔNG SỬ DỤNG: lambda_geo, lambda_var (cần GT depth)
-# ============================================================================
-
-# ===== MONOCULAR BASELINE =====
-mono_baseline,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.0,0.0
-
-# ===== ISO ONLY (isotropic Gaussian constraint) =====
+# ===== SINGLE LOSS =====
+mono_iso01,0.2,0.0,0.0,0.0,0.1,0.0,false,0.0,0.0,0.0
 mono_iso03,0.2,0.0,0.0,0.0,0.3,0.0,false,0.0,0.0,0.0
 mono_iso05,0.2,0.0,0.0,0.0,0.5,0.0,false,0.0,0.0,0.0
 
-# ===== ALIGN ONLY (surface normal alignment) =====
+mono_al01,0.2,0.0,0.0,0.0,0.0,0.1,false,0.0,0.0,0.0
 mono_al02,0.2,0.0,0.0,0.0,0.0,0.2,false,0.0,0.0,0.0
 mono_al03,0.2,0.0,0.0,0.0,0.0,0.3,false,0.0,0.0,0.0
 
-# ===== GRADIENT LOSSES ONLY =====
-# G1 only (first-order gradient - nhạy với edges)
 mono_g101,0.2,0.0,0.0,0.0,0.0,0.0,false,0.1,0.0,0.0
+mono_g103,0.2,0.0,0.0,0.0,0.0,0.0,false,0.3,0.0,0.0
 mono_g105,0.2,0.0,0.0,0.0,0.0,0.0,false,0.5,0.0,0.0
 
-# G2 only (second-order gradient - nhạy với curvature)
 mono_g201,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.1,0.0
+mono_g203,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.3,0.0
 mono_g205,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.5,0.0
 
-# G1 + G2 combined
-mono_g101g201,0.2,0.0,0.0,0.0,0.0,0.0,false,0.1,0.1,0.0
-mono_g105g205,0.2,0.0,0.0,0.0,0.0,0.0,false,0.5,0.5,0.0
-
-# ===== PLANAR REGULARIZATION FOR MONO =====
 mono_reg01,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.0,0.1
+mono_reg03,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.0,0.3
 mono_reg05,0.2,0.0,0.0,0.0,0.0,0.0,false,0.0,0.0,0.5
 
-# ===== COMBINED LOSSES FOR MONOCULAR =====
-# iso + align
+# ===== TWO LOSSES =====
+mono_iso01al01,0.2,0.0,0.0,0.0,0.1,0.1,false,0.0,0.0,0.0
 mono_iso03al02,0.2,0.0,0.0,0.0,0.3,0.2,false,0.0,0.0,0.0
-mono_iso05al03,0.2,0.0,0.0,0.0,0.5,0.3,false,0.0,0.0,0.0
 
-# iso + align + gradient
+mono_g101g201,0.2,0.0,0.0,0.0,0.0,0.0,false,0.1,0.1,0.0
+mono_g103g203,0.2,0.0,0.0,0.0,0.0,0.0,false,0.3,0.3,0.0
+
+mono_iso03g101,0.2,0.0,0.0,0.0,0.3,0.0,false,0.1,0.0,0.0
+mono_al02g101,0.2,0.0,0.0,0.0,0.0,0.2,false,0.1,0.0,0.0
+mono_reg01g101,0.2,0.0,0.0,0.0,0.0,0.0,false,0.1,0.0,0.1
+mono_reg03g103,0.2,0.0,0.0,0.0,0.0,0.0,false,0.3,0.0,0.3
+
+# ===== THREE LOSSES =====
 mono_iso03al02g101,0.2,0.0,0.0,0.0,0.3,0.2,false,0.1,0.0,0.0
+mono_iso03g101g201,0.2,0.0,0.0,0.0,0.3,0.0,false,0.1,0.1,0.0
+mono_al02g101g201,0.2,0.0,0.0,0.0,0.0,0.2,false,0.1,0.1,0.0
+mono_reg01g101g201,0.2,0.0,0.0,0.0,0.0,0.0,false,0.1,0.1,0.1
+
+# ===== FOUR+ LOSSES (FULL COMBOS) =====
+mono_iso01al01g101g201,0.2,0.0,0.0,0.0,0.1,0.1,false,0.1,0.1,0.0
 mono_iso03al02g101g201,0.2,0.0,0.0,0.0,0.3,0.2,false,0.1,0.1,0.0
+mono_iso03al02g103g203,0.2,0.0,0.0,0.0,0.3,0.2,false,0.3,0.3,0.0
 
-# Full monocular (iso + align + g1 + g2)
-mono_full_v1,0.2,0.0,0.0,0.0,0.3,0.2,false,0.1,0.1,0.0
-mono_full_v2,0.2,0.0,0.0,0.0,0.5,0.3,false,0.2,0.2,0.0
-
-# Full mono with reg
-mono_full_reg,0.2,0.0,0.0,0.0,0.3,0.2,false,0.1,0.1,0.1
+# All 5 losses
+mono_iso01al01g101g201reg01,0.2,0.0,0.0,0.0,0.1,0.1,false,0.1,0.1,0.1
+mono_iso03al02g101g201reg01,0.2,0.0,0.0,0.0,0.3,0.2,false,0.1,0.1,0.1
+mono_iso03al02g103g203reg03,0.2,0.0,0.0,0.0,0.3,0.2,false,0.3,0.3,0.3
 

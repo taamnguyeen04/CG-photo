@@ -129,16 +129,17 @@ update_config() {
     echo "  lambda_reg: $LAMBDA_REG"
     
     # Use sed to update the config file (only update if key exists)
-    grep -q "^Optimization.lambda_dssim:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_dssim:.*/Optimization.lambda_dssim: $LAMBDA_DSSIM/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_geo:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_geo:.*/Optimization.lambda_geo: $LAMBDA_GEO/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_smooth:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_smooth:.*/Optimization.lambda_smooth: $LAMBDA_SMOOTH/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_var:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_var:.*/Optimization.lambda_var: $LAMBDA_VAR/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_iso:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_iso:.*/Optimization.lambda_iso: $LAMBDA_ISO/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_align:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_align:.*/Optimization.lambda_align: $LAMBDA_ALIGN/" "$CONFIG_FILE"
-    grep -q "^GaussianMapper.flatten_z_scale:" "$CONFIG_FILE" && sed -i "s/^GaussianMapper.flatten_z_scale:.*/GaussianMapper.flatten_z_scale: $FLATTEN_Z/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_g1:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_g1:.*/Optimization.lambda_g1: $LAMBDA_G1/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_g2:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_g2:.*/Optimization.lambda_g2: $LAMBDA_G2/" "$CONFIG_FILE"
-    grep -q "^Optimization.lambda_reg:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_reg:.*/Optimization.lambda_reg: $LAMBDA_REG/" "$CONFIG_FILE"
+    # Note: || true prevents set -e from stopping on grep not finding key
+    (grep -q "^Optimization.lambda_dssim:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_dssim:.*/Optimization.lambda_dssim: $LAMBDA_DSSIM/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_geo:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_geo:.*/Optimization.lambda_geo: $LAMBDA_GEO/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_smooth:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_smooth:.*/Optimization.lambda_smooth: $LAMBDA_SMOOTH/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_var:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_var:.*/Optimization.lambda_var: $LAMBDA_VAR/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_iso:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_iso:.*/Optimization.lambda_iso: $LAMBDA_ISO/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_align:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_align:.*/Optimization.lambda_align: $LAMBDA_ALIGN/" "$CONFIG_FILE") || true
+    (grep -q "^GaussianMapper.flatten_z_scale:" "$CONFIG_FILE" && sed -i "s/^GaussianMapper.flatten_z_scale:.*/GaussianMapper.flatten_z_scale: $FLATTEN_Z/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_g1:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_g1:.*/Optimization.lambda_g1: $LAMBDA_G1/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_g2:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_g2:.*/Optimization.lambda_g2: $LAMBDA_G2/" "$CONFIG_FILE") || true
+    (grep -q "^Optimization.lambda_reg:" "$CONFIG_FILE" && sed -i "s/^Optimization.lambda_reg:.*/Optimization.lambda_reg: $LAMBDA_REG/" "$CONFIG_FILE") || true
 }
 
 # Read experiments file and count valid experiments
