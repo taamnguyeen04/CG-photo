@@ -805,53 +805,38 @@ void GaussianMapper::trainForOneIteration()
         L_align = loss_utils::depth_alignment_loss(depth, median_depth);
     }
     
-    // L_var: Variance Loss - CG-SLAM Formula (only if enabled AND has GT depth)
-    // FIXED: Normalize by gt_depth² to prevent explosion when depths diverge
-    // Formula: U_normalized = (d - D)² / D²  (relative squared error)
+    // L_var: Variance Loss - CG-SLAM Eq. 10-11 (only if enabled AND has GT depth)
+    // Paper formula: U = Σ αᵢTᵢ(dᵢ - D)² 
+    // Since rasterizer doesn't receive gt_depth, we compute U = (rendered_depth - gt_depth)² here
+    // L_var = (1/HW) Σ |U_n|
     if (lambda_var > 0.0f && has_gt_depth) {
-        // Create valid depth mask - also exclude very small depths to avoid division issues
+        // Create valid depth mask
         auto depth_valid_mask = (gt_depth > RGBD_min_depth_) & (gt_depth < RGBD_max_depth_);
         depth_valid_mask = depth_valid_mask & mask.squeeze().to(torch::kBool);
         
-        // Squeeze tensors to [H, W]
-        auto depth_squeezed = depth.squeeze();
-        auto depth_sq_squeezed = depth_sq.squeeze();
+        // CG-SLAM Eq. 10: U = (d - D)² where d = rendered depth, D = GT depth
+        auto depth_squeezed = depth.squeeze();  // [H, W] rendered depth
+        auto depth_error = depth_squeezed - gt_depth;
+        auto uncertainty_map = depth_error * depth_error;  // U = (d - D)²
         
-        // DEBUG: Log depth statistics every 100 iterations to understand explosion
+        // Apply mask and compute mean (Eq. 11: L_var = (1/HW) Σ |U_n|)
+        auto masked_uncertainty = uncertainty_map * depth_valid_mask.to(uncertainty_map.dtype());
+        auto num_valid = depth_valid_mask.sum().clamp_min(1.0f);
+        L_var = masked_uncertainty.sum() / num_valid;
+        
+        // DEBUG: Log L_var statistics every 100 iterations
         if (getIteration() % 100 == 0) {
-            // Apply mask for statistics
-            auto d_masked = depth_squeezed.masked_select(depth_valid_mask);
-            auto D_masked = gt_depth.masked_select(depth_valid_mask);
-            
-            if (d_masked.numel() > 0) {
-                float d_min = d_masked.min().item<float>();
-                float d_max = d_masked.max().item<float>();
-                float d_mean = d_masked.mean().item<float>();
-                float D_min = D_masked.min().item<float>();
-                float D_max = D_masked.max().item<float>();
-                float D_mean = D_masked.mean().item<float>();
-                
-                auto diff = (d_masked - D_masked).abs();
-                float diff_max = diff.max().item<float>();
-                float diff_mean = diff.mean().item<float>();
-                
-                std::cout << "[L_var DEBUG] iter=" << getIteration() 
-                          << " | d: min=" << d_min << " max=" << d_max << " mean=" << d_mean
-                          << " | D: min=" << D_min << " max=" << D_max << " mean=" << D_mean
-                          << " | |d-D|: max=" << diff_max << " mean=" << diff_mean
-                          << " | valid_pixels=" << d_masked.numel() << std::endl;
+            auto U_masked = uncertainty_map.masked_select(depth_valid_mask);
+            if (U_masked.numel() > 0) {
+                float U_mean = U_masked.mean().item<float>();
+                float U_max = U_masked.max().item<float>();
+                float U_min = U_masked.min().item<float>();
+                std::cout << "[CG-SLAM L_var] iter=" << getIteration() 
+                          << " | U=(d-D)²: min=" << U_min << " max=" << U_max << " mean=" << U_mean
+                          << " | L_var=" << L_var.item<float>()
+                          << " | valid_pixels=" << U_masked.numel() << std::endl;
             }
         }
-        
-        // CG-SLAM L_var: Use relative L1 depth error (NO CLAMP)
-        // L_var = mean(|d - D| / D)
-        auto depth_error = (depth_squeezed - gt_depth).abs();
-        auto relative_error = depth_error / gt_depth.clamp_min(0.1f);  // Only clamp denominator to avoid div by 0
-        
-        // Apply mask and compute mean (NO CLAMP on relative_error)
-        auto masked_error = relative_error * depth_valid_mask.to(relative_error.dtype());
-        auto num_valid = depth_valid_mask.sum().clamp_min(1.0f);
-        L_var = masked_error.sum() / num_valid;
     }
     
     // L_iso: Isotropy Loss (only if enabled) - prevents needle-like Gaussians
@@ -1111,41 +1096,104 @@ void GaussianMapper::trainForOneIteration()
                 gaussians_->resetOpacity();
         }
         
-        // Depth-Photo-SLAM: Uncertainty-based pruning
-        // Run after densification phase to remove high-uncertainty Gaussians
-        const int uncertainty_prune_interval = 500;  // Prune every 500 iterations
-        const float uncertainty_threshold = 0.1f;     // Remove Gaussians with uncertainty > 0.1
+        // CG-SLAM: Uncertainty-based pruning (Eq. 13 approximation)
+        // Paper: νᵢ = (1/(M₁+...+Mₖ)) Σ Σ αᵢᵏ·ᵖ Tᵢᵏ·ᵖ (Dₚᵏ - dᵢᵏ)²
+        // Approximation: Use visibility_filter to identify visible Gaussians,
+        // then estimate per-Gaussian uncertainty from rendered uncertainty map
+        const int uncertainty_prune_interval = 100;   // Paper uses interval based on mapping iterations
+        const float uncertainty_tau = 0.025f;         // Paper threshold τ = 0.025
+        const float uncertainty_ema_alpha = 0.1f;     // EMA smoothing
         
+        // Only run after densification phase (when Gaussians are stable)
         if (getIteration() > opt_params_.densify_until_iter_ && 
-            getIteration() % uncertainty_prune_interval == 0) {
+            getIteration() % uncertainty_prune_interval == 0 &&
+            has_gt_depth) {
             
-            // Compute per-Gaussian uncertainty from depth variance
-            // Use mean of depth_variance weighted by visibility
-            auto per_gaussian_uncertainty = torch::zeros({gaussians_->xyz_.size(0)}, 
+            int64_t num_gaussians = gaussians_->xyz_.size(0);
+            
+            // Initialize per-Gaussian uncertainty tensor
+            auto per_gaussian_uncertainty = torch::zeros({num_gaussians}, 
                 torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
             
-            // Simple heuristic: use variance of depth at visible pixels
-            // Compute depth_variance = E[d²] - E[d]² for pruning heuristic
-            auto depth_variance_for_prune = depth_sq - depth * depth;
-            auto depth_var_mean = depth_variance_for_prune.mean();
-            per_gaussian_uncertainty.fill_(depth_var_mean.item<float>());
+            // CG-SLAM Eq. 13 Approximation:
+            // For each visible Gaussian, estimate its uncertainty contribution
+            // based on rendered depth error in its pixel neighborhood
             
-            // Update Gaussian uncertainties with EMA
+            // Get visibility info from rasterizer
+            auto vis_mask = visibility_filter.to(torch::kBool);  // [N] - which Gaussians are visible
+            auto visible_radii = radii.index({vis_mask});         // Radii of visible Gaussians
+            
+            // Compute uncertainty map: U = (d - D)² where d = rendered, D = GT depth
+            auto depth_squeezed = depth.squeeze();  // [H, W]
+            auto depth_error = depth_squeezed - gt_depth;
+            auto uncertainty_map = depth_error * depth_error;
+            auto gt_depth_valid = (gt_depth > RGBD_min_depth_) & (gt_depth < RGBD_max_depth_);
+            
+            // Mean uncertainty over valid pixels - use as baseline for all visible Gaussians
+            auto valid_uncertainty = uncertainty_map.masked_select(gt_depth_valid);
+            float mean_uncertainty = 0.0f;
+            if (valid_uncertainty.numel() > 0) {
+                mean_uncertainty = valid_uncertainty.mean().item<float>();
+            }
+            
+            // Assign uncertainty to visible Gaussians based on their radius
+            // Larger Gaussians (bigger radii) affect more pixels → inherit more uncertainty
+            if (mean_uncertainty > 0.0f) {
+                // Normalize radii to [0, 1] range
+                auto visible_radii_float = visible_radii.to(torch::kFloat32);
+                float max_radius = visible_radii_float.max().item<float>() + 1e-6f;
+                auto normalized_radii = visible_radii_float / max_radius;
+                
+                // Per-Gaussian uncertainty = mean_uncertainty * (1 + normalized_radius)
+                // This gives larger uncertainty to bigger Gaussians (more influential)
+                auto visible_uncertainty = mean_uncertainty * (1.0f + normalized_radii);
+                
+                // Assign to full tensor using visibility mask
+                per_gaussian_uncertainty.index_put_({vis_mask}, visible_uncertainty);
+            }
+            
+            // Update Gaussian uncertainties with EMA (smooth across frames)
             gaussians_->updateUncertainty(per_gaussian_uncertainty, getIteration());
             
-            // Prune high-uncertainty Gaussians
-            int64_t num_before = gaussians_->xyz_.size(0);
-            gaussians_->uncertaintyPrune(uncertainty_threshold);
-            int64_t num_after = gaussians_->xyz_.size(0);
+            // Count how many Gaussians will have opacity reduced
+            auto& unc = gaussians_->getUncertainty();
+            int num_high_before = (unc.depth_uncertainty > uncertainty_tau).sum().item<int>();
             
-            if (num_before != num_after) {
-                std::cout << "[Depth-Photo-SLAM] Uncertainty Pruning: " 
-                          << num_before << " -> " << num_after 
-                          << " (removed " << (num_before - num_after) << " Gaussians)"
-                          << std::endl;
+            // CG-SLAM: Reduce opacity for high-uncertainty Gaussians (τ > 0.025)
+            // Paper: "primitives with νᵢ > τ will be manually reduced to a low-opacity level"
+            gaussians_->uncertaintyPrune(uncertainty_tau);
+            
+            // Track cumulative statistics (update static counter)
+            static int64_t total_opacity_reduced = 0;
+            static int prune_call_count = 0;
+            int num_affected_this_call = std::min(num_high_before, static_cast<int>(num_gaussians * 0.05f));
+            total_opacity_reduced += num_affected_this_call;
+            prune_call_count++;
+            
+            // Log statistics every 500 iterations or when there are high-uncertainty Gaussians
+            if (getIteration() % 500 == 0 || num_high_before > 0) {
+                float unc_mean = unc.depth_uncertainty.mean().item<float>();
+                float unc_max = unc.depth_uncertainty.max().item<float>();
+                int num_high = (unc.depth_uncertainty > uncertainty_tau).sum().item<int>();
+                float pct_high = 100.0f * num_high / num_gaussians;
+                float pct_cumulative = 100.0f * total_opacity_reduced / num_gaussians;
+                
+                std::cout << "[CG-SLAM Uncertainty] iter=" << getIteration()
+                          << " | Gaussians=" << num_gaussians
+                          << " | ν: mean=" << std::fixed << std::setprecision(4) << unc_mean 
+                          << " max=" << unc_max
+                          << " | high(>τ)=" << num_high << " (" << std::setprecision(1) << pct_high << "%)"
+                          << " | τ=" << uncertainty_tau << std::endl;
+                
+                if (num_affected_this_call > 0) {
+                    std::cout << "[CG-SLAM Uncertainty] Opacity reduced this iteration: " 
+                              << num_affected_this_call 
+                              << " | Cumulative total: " << total_opacity_reduced 
+                              << " (" << std::setprecision(1) << pct_cumulative << "% of current Gaussians)"
+                              << std::endl;
+                }
             }
         }
-
         auto iter_end_timing = std::chrono::steady_clock::now();
         auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                         iter_end_timing - iter_start_timing).count();

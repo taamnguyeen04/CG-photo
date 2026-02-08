@@ -1159,30 +1159,46 @@ void GaussianModel::updateUncertainty(const torch::Tensor& per_gaussian_uncertai
 
 void GaussianModel::uncertaintyPrune(float threshold)
 {
-    if (uncertainty_.depth_uncertainty.size(0) == 0)
+    if (uncertainty_.depth_uncertainty.size(0) == 0 ||
+        uncertainty_.depth_uncertainty.size(0) != xyz_.size(0))
         return;
     
-    // Create prune mask for Gaussians with high uncertainty
-    auto prune_mask = uncertainty_.depth_uncertainty > threshold;
+    // CG-SLAM: Reduce opacity for Gaussians with high uncertainty (νᵢ > τ)
+    // Paper: "primitives with νᵢ > τ will be manually reduced to a low-opacity level"
+    auto high_uncertainty_mask = uncertainty_.depth_uncertainty > threshold;
     
-    // Don't prune too many at once - limit to 10%
-    int num_to_prune = prune_mask.sum().item<int>();
-    int max_prune = static_cast<int>(xyz_.size(0) * 0.1f);
+    // Count affected Gaussians
+    int num_affected = high_uncertainty_mask.sum().item<int>();
+    if (num_affected == 0)
+        return;
     
-    if (num_to_prune > max_prune) {
-        // Sort by uncertainty and only prune the worst ones
+    // Don't affect too many at once - limit to 5% per call
+    int max_affect = static_cast<int>(xyz_.size(0) * 0.05f);
+    
+    if (num_affected > max_affect) {
+        // Sort by uncertainty and only affect the worst ones
         auto [sorted_uncertainty, indices] = torch::sort(uncertainty_.depth_uncertainty, /*descending=*/true);
-        auto top_indices = indices.slice(0, 0, max_prune);
-        prune_mask = torch::zeros_like(prune_mask);
-        prune_mask.index_put_({top_indices}, true);
+        auto top_indices = indices.slice(0, 0, max_affect);
+        high_uncertainty_mask = torch::zeros_like(high_uncertainty_mask);
+        high_uncertainty_mask.index_put_({top_indices}, true);
+        num_affected = max_affect;
     }
     
-    if (prune_mask.any().item<bool>()) {
-        // Prune Gaussian model
-        prunePoints(prune_mask);
-        // Prune uncertainty tensors
-        uncertainty_.prune(prune_mask);
+    // Reduce opacity to near-zero (inverse_sigmoid(0.01) ≈ -4.6)
+    // This makes them nearly invisible but keeps them in the optimization
+    // They may recover if uncertainty decreases
+    torch::NoGradGuard no_grad;
+    
+    auto affected_indices = high_uncertainty_mask.nonzero().squeeze(-1);
+    if (affected_indices.numel() > 0) {
+        // Set opacity to very low value
+        auto low_opacity = torch::full({affected_indices.size(0), 1}, -4.6f, 
+            torch::TensorOptions().device(device_type_).dtype(torch::kFloat32));
+        opacity_.index_put_({affected_indices}, low_opacity);
     }
+    
+    // Update stability flags
+    uncertainty_.updateStability(threshold);
 }
 
 void GaussianModel::fisherPrune(float threshold)

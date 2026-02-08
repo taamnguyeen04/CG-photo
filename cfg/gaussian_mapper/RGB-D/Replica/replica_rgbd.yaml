@@ -71,19 +71,28 @@ Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: 30000
 Optimization.densify_min_opacity: 0.02 #0.005
 Optimization.densify_from_iter: 600
-Optimization.densify_until_iter: 15000
-Optimization.densify_grad_threshold: 0.001
+Optimization.densify_until_iter: 1800
+Optimization.densify_grad_threshold: 0.0001
 
 # Loss Weights (Depth-Photo-SLAM)
 Optimization.lambda_geo: 0.7       # L_geo: Sensor depth L1 loss
 Optimization.lambda_smooth: 0   # L_smooth: Edge-aware smoothness
-Optimization.lambda_var: 0.0       # L_var: Depth variance (uncertainty)
+Optimization.lambda_var: 0.15      # L_var: CG-SLAM depth variance (paper ω₆ = 0.15)
 Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
 Optimization.lambda_align: 0.0    # L_align: Depth alpha-median alignment
 Optimization.lambda_reg: 0.0       # L_reg: Planar regularization (MonoGS++)
-Optimization.lambda_g1: 0.0        # L_g1: First-order gradient loss (2D-3DGS)
-Optimization.lambda_g2: 0.0        # L_g2: Second-order gradient loss (2D-3DGS)
+Optimization.lambda_g1: 0.4        # L_g1: First-order gradient loss (2D-3DGS)
+Optimization.lambda_g2: 0.4        # L_g2: Second-order gradient loss (2D-3DGS)
 Optimization.gradient_log_interval: 0  # Debug: gradient conflict log every N iters (0=off, 100=recommended)
+
+#--------------------------------------------------------------------------------------------
+# CG-SLAM Uncertainty Pruning
+#--------------------------------------------------------------------------------------------
+
+Uncertainty.enable: 1              # Enable uncertainty-based pruning
+Uncertainty.tau: 0.025             # Paper threshold τ for high-uncertainty Gaussians
+Uncertainty.prune_interval: 100    # Reduce opacity every N iterations
+Uncertainty.ema_alpha: 0.1         # EMA smoothing factor
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

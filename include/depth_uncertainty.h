@@ -28,10 +28,13 @@ namespace depth_uncertainty
  */
 struct UncertaintyConfig
 {
-    // Pruning thresholds
-    float uncertainty_threshold = 0.1f;      ///< v_i threshold for primitive stability
-    float fisher_prune_threshold = 0.001f;   ///< FIM score threshold for pruning
-    int prune_interval = 100;                ///< Prune every N iterations
+    // CG-SLAM Paper Parameters
+    float uncertainty_tau = 0.025f;           ///< Paper threshold τ for pruning (Eq. 13)
+    int prune_interval = 100;                 ///< Prune every N iterations
+    float ema_alpha = 0.1f;                   ///< EMA smoothing for uncertainty accumulation
+    
+    // Legacy compatibility (renamed)
+    float uncertainty_threshold = 0.025f;     ///< Alias for uncertainty_tau
     
     // Loss function weights (lambdas)
     float alignment_lambda = 0.1f;           ///< Weight for L_align (median-alpha depth)
