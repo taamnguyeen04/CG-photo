@@ -95,6 +95,15 @@ Uncertainty.prune_interval: 100    # Reduce opacity every N iterations
 Uncertainty.ema_alpha: 0.1         # EMA smoothing factor
 
 #--------------------------------------------------------------------------------------------
+# Wavelet Pyramid (optional - replaces Gaussian pyramid for better edge preservation)
+#--------------------------------------------------------------------------------------------
+
+WaveletPyramid.enabled: 0              # 0=Gaussian pyramid (default), 1=Wavelet pyramid
+WaveletPyramid.type: "haar"            # Wavelet type: haar, db2, db4
+WaveletPyramid.use_high_freq_loss: 1   # Add high-frequency edge loss (LH, HL, HH subbands)
+WaveletPyramid.high_freq_weight: 0.2   # Weight for high-freq loss (0.05-0.2 recommended)
+
+#--------------------------------------------------------------------------------------------
 # Viewer Parameters
 #--------------------------------------------------------------------------------------------
 

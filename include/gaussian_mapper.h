@@ -49,6 +49,8 @@
 #include "gaussian_scene.h"
 #include "gaussian_trainer.h"
 
+#include "wavelet_pyramid.h"
+
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                                       \
     if (!dir.empty() && !std::filesystem::exists(dir))                                      \
         if (!std::filesystem::create_directories(dir))                                      \
@@ -311,6 +313,7 @@ protected:
     int stable_num_iter_existence_;
 
     bool do_gaus_pyramid_training_;
+    wavelet::WaveletPyramidConfig wavelet_config_;  // Wavelet pyramid configuration
 
     std::filesystem::path result_dir_;
     int keyframe_record_interval_;

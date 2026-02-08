@@ -311,6 +311,26 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         kf_gaus_pyramid_factors_[l] = std::pow(0.5f, num_gaus_pyramid_sub_levels_ - l);
     }
 
+    // Wavelet Pyramid Configuration (optional, defaults to disabled)
+    if (settings_file["WaveletPyramid.enabled"].operator int()) {
+        wavelet_config_.enabled = true;
+        std::string wavelet_type_str = (std::string)settings_file["WaveletPyramid.type"];
+        if (wavelet_type_str == "haar" || wavelet_type_str == "HAAR") {
+            wavelet_config_.wavelet_type = wavelet::WaveletType::HAAR;
+        } else if (wavelet_type_str == "db2" || wavelet_type_str == "DB2") {
+            wavelet_config_.wavelet_type = wavelet::WaveletType::DB2;
+        } else if (wavelet_type_str == "db4" || wavelet_type_str == "DB4") {
+            wavelet_config_.wavelet_type = wavelet::WaveletType::DB4;
+        }
+        wavelet_config_.use_high_freq_loss = settings_file["WaveletPyramid.use_high_freq_loss"].operator int() != 0;
+        wavelet_config_.high_freq_weight = settings_file["WaveletPyramid.high_freq_weight"].operator float();
+        std::cout << "[Gaussian Mapper] Wavelet Pyramid ENABLED (" << wavelet_type_str 
+                  << ", high_freq_loss=" << wavelet_config_.use_high_freq_loss 
+                  << ", weight=" << wavelet_config_.high_freq_weight << ")" << std::endl;
+    } else {
+        wavelet_config_.enabled = false;
+    }
+
     keyframe_record_interval_ = 
         settings_file["Record.keyframe_record_interval"].operator int();
     all_keyframes_record_interval_ = 
@@ -483,21 +503,41 @@ void GaussianMapper::run()
                     img_gpu.upload(pkf->img_undist_);
                     pkf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
                     for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-                        cv::cuda::GpuMat img_resized;
-                        cv::cuda::resize(img_gpu, img_resized,
-                                        cv::Size(pkf->gaus_pyramid_width_[l], pkf->gaus_pyramid_height_[l]));
-                        pkf->gaus_pyramid_original_image_[l] =
-                            tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
+                        if (wavelet_config_.enabled) {
+                            // Wavelet Pyramid: Use Haar decomposition for better edge preservation
+                            pkf->gaus_pyramid_original_image_[l] = wavelet::waveletDownsample(
+                                img_gpu,
+                                pkf->gaus_pyramid_height_[l],
+                                pkf->gaus_pyramid_width_[l],
+                                torch::kCUDA);
+                        } else {
+                            // Gaussian Pyramid: Standard bilinear downsampling
+                            cv::cuda::GpuMat img_resized;
+                            cv::cuda::resize(img_gpu, img_resized,
+                                            cv::Size(pkf->gaus_pyramid_width_[l], pkf->gaus_pyramid_height_[l]));
+                            pkf->gaus_pyramid_original_image_[l] =
+                                tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
+                        }
                     }
                 }
                 else {
                     pkf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
                     for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-                        cv::Mat img_resized;
-                        cv::resize(pkf->img_undist_, img_resized,
-                                cv::Size(pkf->gaus_pyramid_width_[l], pkf->gaus_pyramid_height_[l]));
-                        pkf->gaus_pyramid_original_image_[l] =
-                            tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type_);
+                        if (wavelet_config_.enabled) {
+                            // Wavelet Pyramid: Use Haar decomposition for better edge preservation
+                            pkf->gaus_pyramid_original_image_[l] = wavelet::waveletDownsampleCPU(
+                                pkf->img_undist_,
+                                pkf->gaus_pyramid_height_[l],
+                                pkf->gaus_pyramid_width_[l],
+                                device_type_);
+                        } else {
+                            // Gaussian Pyramid: Standard bilinear downsampling
+                            cv::Mat img_resized;
+                            cv::resize(pkf->img_undist_, img_resized,
+                                    cv::Size(pkf->gaus_pyramid_width_[l], pkf->gaus_pyramid_height_[l]));
+                            pkf->gaus_pyramid_original_image_[l] =
+                                tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type_);
+                        }
                     }
                 }
             }
@@ -883,6 +923,16 @@ void GaussianMapper::trainForOneIteration()
         L_g2 = loss_utils::second_order_gradient_loss(masked_image, gt_image, device_type_);
     }
     
+    // L_wavelet: Wavelet edge loss (optional) - preserves high-frequency details
+    torch::Tensor L_wavelet = torch::zeros({1}, torch::TensorOptions().device(device_type_));
+    if (wavelet_config_.enabled && wavelet_config_.use_high_freq_loss) {
+        L_wavelet = wavelet::waveletEdgeLoss(
+            masked_image, gt_image,
+            wavelet_config_.high_freq_weight,   // LH weight
+            wavelet_config_.high_freq_weight,   // HL weight
+            wavelet_config_.high_freq_weight * 0.5f);  // HH weight (less important)
+    }
+    
     // Combine losses with weights
     auto loss = (1.0 - lambda_dssim) * Ll1
                 + lambda_dssim * (1.0 - loss_utils::ssim(masked_image, gt_image, device_type_))
@@ -893,7 +943,8 @@ void GaussianMapper::trainForOneIteration()
                 + lambda_iso * L_iso
                 + lambda_reg * L_reg
                 + lambda_g1 * L_g1
-                + lambda_g2 * L_g2;
+                + lambda_g2 * L_g2
+                + L_wavelet;  // Added wavelet edge loss (weight included in function)
     
     // ========================================================================
     // LOSS COMPONENT LOGGING - Log individual loss values for visualization
@@ -1082,9 +1133,62 @@ void GaussianMapper::trainForOneIteration()
             if ((getIteration() > opt_params_.densify_from_iter_) &&
                 (getIteration() % densifyInterval()== 0)) {
                 int size_threshold = (getIteration() > prune_big_point_after_iter_) ? 20 : 0;
+                
+                // Wavelet-based Adaptive Densification
+                // Compute edge strength from ground truth image to guide densification
+                float adaptive_grad_threshold = densifyGradThreshold();
+                
+                if (wavelet_config_.enabled && has_gt_depth) {
+                    // Compute wavelet decomposition of GT image
+                    auto wavelet_decomp = wavelet::haarDecompose2D(gt_image);
+                    
+                    // Edge strength = |LH| + |HL| + |HH| (high-frequency components)
+                    auto edge_strength_map = wavelet_decomp.LH.abs() + 
+                                            wavelet_decomp.HL.abs() + 
+                                            wavelet_decomp.HH.abs();
+                    
+                    // Normalize edge strength to [0, 1]
+                    auto edge_max = edge_strength_map.max();
+                    auto edge_min = edge_strength_map.min();
+                    if ((edge_max - edge_min).item<float>() > 1e-6f) {
+                        edge_strength_map = (edge_strength_map - edge_min) / (edge_max - edge_min + 1e-6f);
+                    }
+                    
+                    // Compute mean edge strength (wavelet output is half-resolution, so use direct mean)
+                    // Note: edge_strength_map is [C, H/2, W/2] due to wavelet decomposition
+                    float mean_edge_strength = 0.5f;  // Default
+                    if (edge_strength_map.numel() > 0) {
+                        mean_edge_strength = edge_strength_map.mean().item<float>();
+                    }
+                    
+                    // Adaptive threshold based on edge content:
+                    // High edge strength (>0.6) → lower threshold (densify more)
+                    // Low edge strength (<0.3) → higher threshold (densify less)
+                    const float edge_boost_factor = 0.5f;    // Multiply threshold by this in high-edge regions
+                    const float smooth_reduce_factor = 1.5f; // Multiply threshold by this in smooth regions
+                    
+                    if (mean_edge_strength > 0.6f) {
+                        // High-detail region: densify more aggressively
+                        adaptive_grad_threshold *= edge_boost_factor;
+                    } else if (mean_edge_strength < 0.3f) {
+                        // Smooth region: densify less
+                        adaptive_grad_threshold *= smooth_reduce_factor;
+                    }
+                    // else: medium edge strength, use default threshold
+                    
+                    // Debug logging every 500 iterations
+                    if (getIteration() % 500 == 0) {
+                        std::cout << "[Wavelet Densify] iter=" << getIteration()
+                                  << " | edge_strength=" << std::fixed << std::setprecision(3) << mean_edge_strength
+                                  << " | threshold=" << adaptive_grad_threshold 
+                                  << " (base=" << densifyGradThreshold() << ")"
+                                  << std::endl;
+                    }
+                }
+                
                 gaussians_->densifyAndPrune(
-                    densifyGradThreshold(),
-                    densify_min_opacity_,//0.005,//
+                    adaptive_grad_threshold,  // Adaptive threshold based on wavelet edge strength
+                    densify_min_opacity_,
                     scene_->cameras_extent_,
                     size_threshold
                 );
