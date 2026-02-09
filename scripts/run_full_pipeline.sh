@@ -114,7 +114,7 @@ mkdir -p "${RESULTS_DIR}"
 
 # Only write header if CSV doesn't exist or is empty
 if [ ! -f "$SUMMARY_ALL" ] || [ ! -s "$SUMMARY_ALL" ]; then
-    echo "scene,run,psnr,ssim,lpips,ate_rmse,accuracy,completion,comp_ratio,chamfer" > "$SUMMARY_ALL"
+    echo "scene,run,psnr,ssim,lpips,ate_rmse,accuracy,completion,comp_ratio,chamfer,gaussians" > "$SUMMARY_ALL"
 fi
 echo "# Failed runs log - $(date)" >> "$FAILED_LOG"
 
@@ -222,14 +222,21 @@ run_single_scene() {
     COMP_RATIO=$(echo "$EVAL_OUTPUT" | grep "completion ratio:" | awk '{printf "%.2f", $3}')
     CHAMFER=$(echo "$EVAL_OUTPUT" | grep "chamfer:" | awk '{printf "%.4f", $2}')
     
+    # Extract Gaussian count from gaussian_count.txt
+    GAUSSIANS="N/A"
+    if [ -f "${RESULT_DIR}/gaussian_count.txt" ]; then
+        GAUSSIANS=$(cat "${RESULT_DIR}/gaussian_count.txt" | tr -d '[:space:]')
+    fi
+    
     # Print summary for this run
     echo ""
     echo "--- ${SCENE} Run ${RUN} Results ---"
     echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS} | ATE: ${ATE_RMSE}m"
     echo "Acc: ${ACC}cm | Comp: ${COMP}cm | Chamfer: ${CHAMFER}cm | Ratio: ${COMP_RATIO}%"
+    echo "Gaussians: ${GAUSSIANS}"
     
     # Append to CSV
-    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${ACC},${COMP},${COMP_RATIO},${CHAMFER}" >> "$SUMMARY_ALL"
+    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${ACC},${COMP},${COMP_RATIO},${CHAMFER},${GAUSSIANS}" >> "$SUMMARY_ALL"
     
     # Save individual summary
     cat > "${RESULT_DIR}/summary.txt" << EOF

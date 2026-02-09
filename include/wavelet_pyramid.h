@@ -45,11 +45,17 @@ enum class WaveletType {
  * Configuration for wavelet pyramid
  */
 struct WaveletPyramidConfig {
-    bool enabled = false;           ///< Use wavelet instead of Gaussian pyramid
+    bool enabled = false;           ///< Use adaptive densification
+    bool use_sobel = true;          ///< true=Sobel edge detection, false=Wavelet
     WaveletType wavelet_type = WaveletType::HAAR;
     int num_levels = 3;             ///< Number of decomposition levels
     bool use_high_freq_loss = true; ///< Add high-freq subbands to loss
     float high_freq_weight = 0.1f;  ///< Weight for LH, HL, HH in loss
+    
+    // Wavelet-guided Gaussian Initialization
+    bool init_enabled = false;      ///< Add extra Gaussians at edge regions during init
+    float init_edge_threshold = 0.3f; ///< Min edge strength to add extra Gaussians
+    int init_max_extra_points = 5000; ///< Max extra points per keyframe
 };
 
 /**

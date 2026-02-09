@@ -98,10 +98,34 @@ Uncertainty.ema_alpha: 0.1         # EMA smoothing factor
 # Wavelet Pyramid (optional - replaces Gaussian pyramid for better edge preservation)
 #--------------------------------------------------------------------------------------------
 
-WaveletPyramid.enabled: 0              # 0=Gaussian pyramid (default), 1=Wavelet pyramid
-WaveletPyramid.type: "haar"            # Wavelet type: haar, db2, db4
+WaveletPyramid.enabled: 1              # 0=Disabled, 1=Enable adaptive densification
+WaveletPyramid.edge_method: "sobel"    # "sobel" (faster) or "wavelet" (multi-scale)
+WaveletPyramid.type: "haar"            # Wavelet type: haar, db2, db4 (only for wavelet method)
 WaveletPyramid.use_high_freq_loss: 1   # Add high-frequency edge loss (LH, HL, HH subbands)
 WaveletPyramid.high_freq_weight: 0.2   # Weight for high-freq loss (0.05-0.2 recommended)
+
+#--------------------------------------------------------------------------------------------
+# Wavelet-guided Initialization (adds extra Gaussians at edge regions)
+#--------------------------------------------------------------------------------------------
+
+WaveletInit.enabled: 0                 # Enable wavelet-guided Gaussian initialization
+WaveletInit.edge_threshold: 0.3        # Min edge strength to add extra Gaussians (0.0-1.0)
+WaveletInit.max_extra_points: 5000     # Max extra points per keyframe
+
+#--------------------------------------------------------------------------------------------
+# Fisher Information-based Uncertainty (for principled pruning/densification)
+#--------------------------------------------------------------------------------------------
+
+Fisher.enabled: 0                      # 0=disabled, 1=enabled
+Fisher.prune_threshold: 0.01           # Prune if Fisher score < threshold
+Fisher.update_interval: 50             # Compute score every N iterations
+Fisher.prune_interval: 500             # Apply pruning every N iterations
+Fisher.ema_alpha: 0.9                  # EMA smoothing for score accumulation
+Fisher.min_observations: 10            # Min observations before pruning eligible
+Fisher.weight_position: 1.0            # Weight for position gradient
+Fisher.weight_scale: 0.5               # Weight for scale gradient
+Fisher.weight_rotation: 0.3            # Weight for rotation gradient
+Fisher.weight_opacity: 0.2             # Weight for opacity gradient
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

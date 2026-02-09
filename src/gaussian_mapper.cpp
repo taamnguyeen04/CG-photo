@@ -314,6 +314,15 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
     // Wavelet Pyramid Configuration (optional, defaults to disabled)
     if (settings_file["WaveletPyramid.enabled"].operator int()) {
         wavelet_config_.enabled = true;
+        
+        // Parse edge detection method (sobel or wavelet)
+        std::string edge_method_str = (std::string)settings_file["WaveletPyramid.edge_method"];
+        if (edge_method_str == "sobel" || edge_method_str == "SOBEL") {
+            wavelet_config_.use_sobel = true;
+        } else {
+            wavelet_config_.use_sobel = false;  // Default to wavelet
+        }
+        
         std::string wavelet_type_str = (std::string)settings_file["WaveletPyramid.type"];
         if (wavelet_type_str == "haar" || wavelet_type_str == "HAAR") {
             wavelet_config_.wavelet_type = wavelet::WaveletType::HAAR;
@@ -324,11 +333,23 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         }
         wavelet_config_.use_high_freq_loss = settings_file["WaveletPyramid.use_high_freq_loss"].operator int() != 0;
         wavelet_config_.high_freq_weight = settings_file["WaveletPyramid.high_freq_weight"].operator float();
-        std::cout << "[Gaussian Mapper] Wavelet Pyramid ENABLED (" << wavelet_type_str 
+        std::cout << "[Gaussian Mapper] Adaptive Densify ENABLED (method=" << edge_method_str 
                   << ", high_freq_loss=" << wavelet_config_.use_high_freq_loss 
                   << ", weight=" << wavelet_config_.high_freq_weight << ")" << std::endl;
     } else {
         wavelet_config_.enabled = false;
+    }
+    
+    // Wavelet-guided Gaussian Initialization (independent of wavelet pyramid)
+    if (settings_file["WaveletInit.enabled"].operator int()) {
+        wavelet_config_.init_enabled = true;
+        wavelet_config_.init_edge_threshold = settings_file["WaveletInit.edge_threshold"].operator float();
+        wavelet_config_.init_max_extra_points = settings_file["WaveletInit.max_extra_points"].operator int();
+        std::cout << "[Gaussian Mapper] Wavelet Init ENABLED (edge_threshold=" 
+                  << wavelet_config_.init_edge_threshold 
+                  << ", max_extra_points=" << wavelet_config_.init_max_extra_points << ")" << std::endl;
+    } else {
+        wavelet_config_.init_enabled = false;
     }
 
     keyframe_record_interval_ = 
@@ -606,6 +627,16 @@ void GaussianMapper::run()
         renderAndRecordAllTrajectoryPoses(traj_file, "_shutdown");
     }
     savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") / "ply");
+    
+    // Save Gaussian count to file for pipeline script extraction
+    {
+        std::ofstream count_file(result_dir_ / "gaussian_count.txt");
+        if (count_file.is_open()) {
+            count_file << gaussians_->xyz_.size(0) << std::endl;
+            count_file.close();
+        }
+    }
+    
     writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
     signalStop();
@@ -1139,50 +1170,74 @@ void GaussianMapper::trainForOneIteration()
                 float adaptive_grad_threshold = densifyGradThreshold();
                 
                 if (wavelet_config_.enabled && has_gt_depth) {
-                    // Compute wavelet decomposition of GT image
-                    auto wavelet_decomp = wavelet::haarDecompose2D(gt_image);
+                    float mean_edge_strength = 0.5f;
                     
-                    // Edge strength = |LH| + |HL| + |HH| (high-frequency components)
-                    auto edge_strength_map = wavelet_decomp.LH.abs() + 
-                                            wavelet_decomp.HL.abs() + 
-                                            wavelet_decomp.HH.abs();
-                    
-                    // Normalize edge strength to [0, 1]
-                    auto edge_max = edge_strength_map.max();
-                    auto edge_min = edge_strength_map.min();
-                    if ((edge_max - edge_min).item<float>() > 1e-6f) {
-                        edge_strength_map = (edge_strength_map - edge_min) / (edge_max - edge_min + 1e-6f);
-                    }
-                    
-                    // Compute mean edge strength (wavelet output is half-resolution, so use direct mean)
-                    // Note: edge_strength_map is [C, H/2, W/2] due to wavelet decomposition
-                    float mean_edge_strength = 0.5f;  // Default
-                    if (edge_strength_map.numel() > 0) {
-                        mean_edge_strength = edge_strength_map.mean().item<float>();
-                    }
-                    
-                    // Adaptive threshold based on edge content:
-                    // High edge strength (>0.6) → lower threshold (densify more)
-                    // Low edge strength (<0.3) → higher threshold (densify less)
-                    const float edge_boost_factor = 0.5f;    // Multiply threshold by this in high-edge regions
-                    const float smooth_reduce_factor = 1.5f; // Multiply threshold by this in smooth regions
-                    
-                    if (mean_edge_strength > 0.6f) {
-                        // High-detail region: densify more aggressively
-                        adaptive_grad_threshold *= edge_boost_factor;
-                    } else if (mean_edge_strength < 0.3f) {
-                        // Smooth region: densify less
-                        adaptive_grad_threshold *= smooth_reduce_factor;
-                    }
-                    // else: medium edge strength, use default threshold
-                    
-                    // Debug logging every 500 iterations
-                    if (getIteration() % 500 == 0) {
-                        std::cout << "[Wavelet Densify] iter=" << getIteration()
-                                  << " | edge_strength=" << std::fixed << std::setprecision(3) << mean_edge_strength
-                                  << " | threshold=" << adaptive_grad_threshold 
-                                  << " (base=" << densifyGradThreshold() << ")"
-                                  << std::endl;
+                    if (wavelet_config_.use_sobel) {
+                        // Sobel-based edge detection (faster, pixel-level accuracy)
+                        auto gray = gt_image.mean(0, true);
+                        
+                        auto sobel_x = torch::tensor({{-1.0f, 0.0f, 1.0f},
+                                                       {-2.0f, 0.0f, 2.0f},
+                                                       {-1.0f, 0.0f, 1.0f}}, 
+                                                      torch::TensorOptions().device(gt_image.device()));
+                        auto sobel_y = torch::tensor({{-1.0f, -2.0f, -1.0f},
+                                                       { 0.0f,  0.0f,  0.0f},
+                                                       { 1.0f,  2.0f,  1.0f}}, 
+                                                      torch::TensorOptions().device(gt_image.device()));
+                        
+                        sobel_x = sobel_x.unsqueeze(0).unsqueeze(0);
+                        sobel_y = sobel_y.unsqueeze(0).unsqueeze(0);
+                        auto gray_batch = gray.unsqueeze(0);
+                        
+                        auto grad_x = torch::nn::functional::conv2d(gray_batch, sobel_x, 
+                            torch::nn::functional::Conv2dFuncOptions().padding(1));
+                        auto grad_y = torch::nn::functional::conv2d(gray_batch, sobel_y,
+                            torch::nn::functional::Conv2dFuncOptions().padding(1));
+                        
+                        auto grad_mag = torch::sqrt(grad_x * grad_x + grad_y * grad_y);
+                        auto edge_max = grad_mag.max();
+                        auto edge_min = grad_mag.min();
+                        if ((edge_max - edge_min).item<float>() > 1e-6f) {
+                            grad_mag = (grad_mag - edge_min) / (edge_max - edge_min + 1e-6f);
+                        }
+                        mean_edge_strength = grad_mag.mean().item<float>();
+                        
+                        // Sobel thresholds (values are ~0.02-0.15)
+                        if (mean_edge_strength > 0.15f) {
+                            adaptive_grad_threshold *= 0.5f;  // Densify more
+                        } else if (mean_edge_strength < 0.05f) {
+                            adaptive_grad_threshold *= 1.5f;  // Densify less
+                        }
+                        
+                        if (getIteration() % 500 == 0) {
+                            std::cout << "[Sobel Densify] iter=" << getIteration()
+                                      << " | edge=" << std::fixed << std::setprecision(3) << mean_edge_strength
+                                      << " | thresh=" << adaptive_grad_threshold << std::endl;
+                        }
+                    } else {
+                        // Wavelet-based edge detection (multi-scale)
+                        auto wavelet_decomp = wavelet::haarDecompose2D(gt_image);
+                        auto edge_map = wavelet_decomp.LH.abs() + wavelet_decomp.HL.abs() + wavelet_decomp.HH.abs();
+                        
+                        auto edge_max = edge_map.max();
+                        auto edge_min = edge_map.min();
+                        if ((edge_max - edge_min).item<float>() > 1e-6f) {
+                            edge_map = (edge_map - edge_min) / (edge_max - edge_min + 1e-6f);
+                        }
+                        mean_edge_strength = edge_map.mean().item<float>();
+                        
+                        // Wavelet thresholds (values are ~0.3-0.6)
+                        if (mean_edge_strength > 0.6f) {
+                            adaptive_grad_threshold *= 0.5f;  // Densify more
+                        } else if (mean_edge_strength < 0.3f) {
+                            adaptive_grad_threshold *= 1.5f;  // Densify less
+                        }
+                        
+                        if (getIteration() % 500 == 0) {
+                            std::cout << "[Wavelet Densify] iter=" << getIteration()
+                                      << " | edge=" << std::fixed << std::setprecision(3) << mean_edge_strength
+                                      << " | thresh=" << adaptive_grad_threshold << std::endl;
+                        }
                     }
                 }
                 
@@ -1998,6 +2053,74 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
             tensor_utils::EigenMatrix2TorchTensor(
                 Twc.matrix(), device_type_).transpose(0, 1);
         transformPoints(points3D_valid, Twc_tensor);
+
+        // Wavelet-guided Gaussian Initialization: Add extra points at edge regions
+        if (wavelet_config_.init_enabled) {
+            try {
+                // Get image dimensions
+                int H = pkf->image_height_;
+                int W = pkf->image_width_;
+                
+                // Convert RGB to grayscale tensor for wavelet decomposition
+                // rgb is [H*W, 3], reshape to [3, H, W] for wavelet
+                auto rgb_reshaped = rgb.view({H, W, 3}).permute({2, 0, 1}).contiguous();
+                
+                // Compute wavelet decomposition
+                auto wavelet_decomp = wavelet::haarDecompose2D(rgb_reshaped);
+                
+                // Compute edge strength: |LH| + |HL| + |HH|
+                auto edge_map = torch::abs(wavelet_decomp.LH).mean(0) + 
+                                torch::abs(wavelet_decomp.HL).mean(0) + 
+                                torch::abs(wavelet_decomp.HH).mean(0);
+                
+                // Upsample edge_map back to original resolution (wavelet output is H/2 x W/2)
+                auto edge_map_upsampled = torch::nn::functional::interpolate(
+                    edge_map.unsqueeze(0).unsqueeze(0),
+                    torch::nn::functional::InterpolateFuncOptions()
+                        .size(std::vector<int64_t>{H, W})
+                        .mode(torch::kBilinear)
+                        .align_corners(false)
+                ).squeeze();  // [H, W]
+                
+                // Flatten and apply validity mask
+                auto edge_flat = edge_map_upsampled.flatten().index({point_valid_flags});
+                
+                // Find high-edge pixels above threshold
+                auto edge_mask = edge_flat > wavelet_config_.init_edge_threshold;
+                int num_edge_points = edge_mask.sum().item<int>();
+                
+                if (num_edge_points > 0) {
+                    // Get edge points and colors
+                    auto edge_points = points3D_valid.index({edge_mask});
+                    auto edge_colors = colors_valid.index({edge_mask});
+                    
+                    // Limit extra points
+                    int max_extra = wavelet_config_.init_max_extra_points;
+                    if (num_edge_points > max_extra) {
+                        // Random sampling
+                        auto indices = torch::randperm(num_edge_points, 
+                            torch::TensorOptions().device(device_type_)).slice(0, 0, max_extra);
+                        edge_points = edge_points.index({indices});
+                        edge_colors = edge_colors.index({indices});
+                        num_edge_points = max_extra;
+                    }
+                    
+                    // Add small random offset to avoid exact duplicates
+                    auto offset = torch::randn_like(edge_points) * 0.002f;
+                    edge_points = edge_points + offset;
+                    
+                    // Merge with original points
+                    points3D_valid = torch::cat({points3D_valid, edge_points}, 0);
+                    colors_valid = torch::cat({colors_valid, edge_colors}, 0);
+                    
+                    std::cout << "[Wavelet Init] KF " << pkf->fid_ 
+                              << " | Added " << num_edge_points 
+                              << " extra edge points (total: " << points3D_valid.size(0) << ")" << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "[Wavelet Init] Warning: " << e.what() << std::endl;
+            }
+        }
 
         // Add new points to the cache
         if (depth_cached_ == 0) {
