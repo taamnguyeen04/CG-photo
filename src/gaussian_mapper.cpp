@@ -389,6 +389,21 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         guided_depth_config_.enabled = false;
     }
 
+    // Geometry-Aware Gaussian Initialization
+    if (settings_file["GeoAwareInit.enabled"].operator int()) {
+        geo_aware_config_.enabled = true;
+        geo_aware_config_.flatten_ratio = settings_file["GeoAwareInit.flatten_ratio"].operator float();
+        geo_aware_config_.opacity_min = settings_file["GeoAwareInit.opacity_min"].operator float();
+        geo_aware_config_.opacity_max = settings_file["GeoAwareInit.opacity_max"].operator float();
+        geo_aware_config_.edge_opacity_threshold = settings_file["GeoAwareInit.edge_opacity_threshold"].operator float();
+        std::cout << "[Gaussian Mapper] GeoAware Init ENABLED (flatten=" 
+                  << geo_aware_config_.flatten_ratio 
+                  << ", opacity=[" << geo_aware_config_.opacity_min
+                  << "," << geo_aware_config_.opacity_max << "])" << std::endl;
+    } else {
+        geo_aware_config_.enabled = false;
+    }
+
     keyframe_record_interval_ = 
         settings_file["Record.keyframe_record_interval"].operator int();
     all_keyframes_record_interval_ = 
@@ -2294,14 +2309,82 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
             }
         }
 
+        // Geometry-Aware Gaussian Initialization: compute better init params
+        torch::Tensor geo_rotations, geo_scale_mods, geo_opacities;
+        bool has_geo_aware = false;
+        if (geo_aware_config_.enabled) {
+            try {
+                // Download depth map to CPU for normal computation
+                cv::Mat depth_cpu;
+                img_depth_gpu.download(depth_cpu);
+                cv::Mat depth_float;
+                if (depth_cpu.channels() > 1) {
+                    std::vector<cv::Mat> channels;
+                    cv::split(depth_cpu, channels);
+                    channels[0].convertTo(depth_float, CV_32FC1);
+                } else {
+                    depth_cpu.convertTo(depth_float, CV_32FC1);
+                }
+
+                cv::Mat rgb_cpu;
+                img_rgb_gpu.download(rgb_cpu);
+
+                // Get camera intrinsics
+                Camera& cam = scene_->cameras_.at(pkf->camera_id_);
+                float fx = cam.params_[0];
+                float fy = cam.params_[1];
+                float cx = cam.params_[2];
+                float cy = cam.params_[3];
+
+                has_geo_aware = geo_aware::computeGeoAwareParams(
+                    depth_float, rgb_cpu, point_valid_flags,
+                    points3D_valid, fx, fy, cx, cy,
+                    pkf->image_width_, pkf->image_height_,
+                    geo_aware_config_, device_type_,
+                    geo_rotations, geo_scale_mods, geo_opacities);
+
+                // Handle wavelet extra points: append default params for them
+                if (has_geo_aware && points3D_valid.size(0) > geo_rotations.size(0)) {
+                    int n_extra = points3D_valid.size(0) - geo_rotations.size(0);
+                    // Default identity rotation for extra points
+                    auto extra_rots = torch::zeros({n_extra, 4},
+                        torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
+                    extra_rots.index({torch::indexing::Slice(), 0}) = 1.0f;
+                    geo_rotations = torch::cat({geo_rotations, extra_rots}, 0);
+                    // Default no-flatten for extra points
+                    auto extra_scales = torch::zeros({n_extra, 3},
+                        torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
+                    geo_scale_mods = torch::cat({geo_scale_mods, extra_scales}, 0);
+                    // Default opacity for extra points
+                    float default_opa = std::log(0.1f / (1.0f - 0.1f));
+                    auto extra_opas = torch::full({n_extra, 1}, default_opa,
+                        torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
+                    geo_opacities = torch::cat({geo_opacities, extra_opas}, 0);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "[GeoAware] Warning: " << e.what() << std::endl;
+                has_geo_aware = false;
+            }
+        }
+
         // Add new points to the cache
         if (depth_cached_ == 0) {
             depth_cache_points_ = points3D_valid;
             depth_cache_colors_ = colors_valid;
+            if (has_geo_aware) {
+                depth_cache_rotations_ = geo_rotations;
+                depth_cache_scale_mods_ = geo_scale_mods;
+                depth_cache_opacities_ = geo_opacities;
+            }
         }
         else {
             depth_cache_points_ = torch::cat({depth_cache_points_, points3D_valid}, /*dim=*/0);
             depth_cache_colors_ = torch::cat({depth_cache_colors_, colors_valid}, /*dim=*/0);
+            if (has_geo_aware) {
+                depth_cache_rotations_ = torch::cat({depth_cache_rotations_, geo_rotations}, /*dim=*/0);
+                depth_cache_scale_mods_ = torch::cat({depth_cache_scale_mods_, geo_scale_mods}, /*dim=*/0);
+                depth_cache_opacities_ = torch::cat({depth_cache_opacities_, geo_opacities}, /*dim=*/0);
+            }
         }
 // savePly(result_dir_ / (std::to_string(getIteration()) + "_" + std::to_string(pkf->fid_) + "_1_after_inactive_geo_densify"));
     }
@@ -2320,7 +2403,14 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
         depth_cached_ = 0;
         // Add new points to the model
         std::unique_lock<std::mutex> lock_render(mutex_render_);
-        gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_, getIteration());
+        if (geo_aware_config_.enabled && depth_cache_rotations_.defined() &&
+            depth_cache_rotations_.size(0) == depth_cache_points_.size(0)) {
+            gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_,
+                                   depth_cache_rotations_, depth_cache_scale_mods_,
+                                   depth_cache_opacities_, getIteration());
+        } else {
+            gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_, getIteration());
+        }
     }
 
 // auto end_timing = std::chrono::steady_clock::now();

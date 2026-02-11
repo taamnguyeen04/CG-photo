@@ -139,6 +139,15 @@ GuidedDepth.depth_gradient_threshold: 0.5  # Max depth gradient (m/pixel)
 GuidedDepth.grid_cell_size: 8              # Grid cell size for uniform subsampling
 GuidedDepth.min_valid_depth_ratio: 0.01    # Min valid depth ratio to proceed
 
+# Geometry-Aware Gaussian Initialization
+#--------------------------------------------------------------------------------------------
+
+GeoAwareInit.enabled: 1                    # 0=disabled, 1=enabled
+GeoAwareInit.flatten_ratio: 0.3            # sz/sx ratio (0.1=very flat, 1.0=sphere)
+GeoAwareInit.opacity_min: 0.05             # Opacity at smooth regions
+GeoAwareInit.opacity_max: 0.3              # Opacity at edge/textured regions
+GeoAwareInit.edge_opacity_threshold: 0.1   # Normalized edge strength for max opacity
+
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters
 #--------------------------------------------------------------------------------------------

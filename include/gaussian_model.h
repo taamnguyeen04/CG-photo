@@ -79,6 +79,9 @@ public:
 
     void increasePcd(std::vector<float> points, std::vector<float> colors, const int iteration);
     void increasePcd(torch::Tensor& new_point_cloud, torch::Tensor& new_colors, const int iteration);
+    void increasePcd(torch::Tensor& new_point_cloud, torch::Tensor& new_colors,
+                     torch::Tensor& init_rotations, torch::Tensor& init_scale_modifiers,
+                     torch::Tensor& init_opacities, const int iteration);
 
     void applyScaledTransformation(
         const float s = 1.0,

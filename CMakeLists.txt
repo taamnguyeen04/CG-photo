@@ -125,6 +125,7 @@ add_library(gaussian_mapper SHARED
     include/gaussian_trainer.h
     include/gaussian_mapper.h
     include/guided_depth_filter.h
+    include/geometry_aware_init.h
     include/general_utils.h
     include/graphics_utils.h
     include/loss_utils.h

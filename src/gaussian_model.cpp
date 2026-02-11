@@ -376,6 +376,87 @@ void GaussianModel::increasePcd(torch::Tensor& new_point_cloud, torch::Tensor& n
 // std::cout << "increasePcd(tensor) postfix time: " << time << " ms" <<std::endl;
 }
 
+void GaussianModel::increasePcd(torch::Tensor& new_point_cloud, torch::Tensor& new_colors,
+                                torch::Tensor& init_rotations, torch::Tensor& init_scale_modifiers,
+                                torch::Tensor& init_opacities, const int iteration)
+{
+    auto num_new_points = new_point_cloud.size(0);
+    if (num_new_points == 0)
+        return;
+
+    if (sparse_points_xyz_.size(0) == 0) {
+        sparse_points_xyz_ = new_point_cloud;
+        sparse_points_color_ = new_colors;
+    }
+    else {
+        sparse_points_xyz_ = torch::cat({sparse_points_xyz_, new_point_cloud}, /*dim=*/0);
+        sparse_points_color_ = torch::cat({sparse_points_color_, new_colors}, /*dim=*/0);
+    }
+
+    torch::Tensor new_fused_colors = sh_utils::RGB2SH(new_colors);
+    auto temp = this->max_sh_degree_ + 1;
+    torch::Tensor features = torch::zeros(
+        {new_fused_colors.size(0), 3, temp * temp},
+        torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
+    features.index(
+        {torch::indexing::Slice(),
+         torch::indexing::Slice(0, 3),
+         0}) = new_fused_colors;
+    features.index(
+        {torch::indexing::Slice(),
+         torch::indexing::Slice(3, features.size(1)),
+         torch::indexing::Slice(1, features.size(2))}) = 0.0f;
+
+    // KNN-based base scale (isotropic)
+    torch::Tensor dist2 = torch::clamp_min(
+        distCUDA2(new_point_cloud.clone()), 0.0000001);
+    torch::Tensor scales = torch::log(torch::sqrt(dist2));
+    auto scales_ndimension = scales.ndimension();
+    scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
+
+    // Apply geometry-aware scale modifier (additive in log-space)
+    // init_scale_modifiers is [N, 3] with [0, 0, log(flatten_ratio)]
+    scales = scales + init_scale_modifiers;
+
+    // Use pre-computed rotations instead of identity
+    torch::Tensor rots = init_rotations;
+
+    // Use pre-computed opacities instead of uniform 0.1
+    torch::Tensor opacities = init_opacities;
+
+    torch::Tensor new_exist_since_iter = torch::full(
+        {new_point_cloud.size(0)},
+        iteration,
+        torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+
+    auto new_xyz = new_point_cloud;
+    auto new_features_dc = features.index({torch::indexing::Slice(),
+                                                    torch::indexing::Slice(),
+                                                    torch::indexing::Slice(0, 1)})
+                                        .transpose(1, 2)
+                                        .contiguous();
+    auto new_features_rest = features.index({torch::indexing::Slice(),
+                                                      torch::indexing::Slice(),
+                                                      torch::indexing::Slice(1, features.size(2))})
+                                          .transpose(1, 2)
+                                          .contiguous();
+    auto new_opacities = opacities;
+    auto new_scaling = scales;
+    auto new_rotation = rots;
+
+    densificationPostfix(
+        new_xyz,
+        new_features_dc,
+        new_features_rest,
+        new_opacities,
+        new_scaling,
+        new_rotation,
+        new_exist_since_iter
+    );
+
+    c10::cuda::CUDACachingAllocator::emptyCache();
+}
+
 void GaussianModel::applyScaledTransformation(
     const float s,
     const Sophus::SE3f T)
