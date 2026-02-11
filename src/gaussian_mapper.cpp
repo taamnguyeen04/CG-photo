@@ -352,6 +352,43 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         wavelet_config_.init_enabled = false;
     }
 
+    // Fisher Information-based Uncertainty Configuration
+    if (settings_file["Fisher.enabled"].operator int()) {
+        fisher_config_.enabled = true;
+        fisher_config_.prune_threshold = settings_file["Fisher.prune_threshold"].operator float();
+        fisher_config_.update_interval = settings_file["Fisher.update_interval"].operator int();
+        fisher_config_.prune_interval = settings_file["Fisher.prune_interval"].operator int();
+        fisher_config_.ema_alpha = settings_file["Fisher.ema_alpha"].operator float();
+        fisher_config_.min_observation_count = settings_file["Fisher.min_observations"].operator float();
+        fisher_config_.weight_position = settings_file["Fisher.weight_position"].operator float();
+        fisher_config_.weight_scale = settings_file["Fisher.weight_scale"].operator float();
+        fisher_config_.weight_rotation = settings_file["Fisher.weight_rotation"].operator float();
+        fisher_config_.weight_opacity = settings_file["Fisher.weight_opacity"].operator float();
+        std::cout << "[Gaussian Mapper] Fisher Information ENABLED (prune_threshold=" 
+                  << fisher_config_.prune_threshold 
+                  << ", update_interval=" << fisher_config_.update_interval 
+                  << ", prune_interval=" << fisher_config_.prune_interval << ")" << std::endl;
+    } else {
+        fisher_config_.enabled = false;
+    }
+
+    // Guided Filter Dense Depth Initialization
+    if (settings_file["GuidedDepth.enabled"].operator int()) {
+        guided_depth_config_.enabled = true;
+        guided_depth_config_.max_points_per_keyframe = settings_file["GuidedDepth.max_points_per_keyframe"].operator int();
+        guided_depth_config_.edge_sample_ratio = settings_file["GuidedDepth.edge_sample_ratio"].operator float();
+        guided_depth_config_.edge_threshold = settings_file["GuidedDepth.edge_threshold"].operator float();
+        guided_depth_config_.depth_gradient_threshold = settings_file["GuidedDepth.depth_gradient_threshold"].operator float();
+        guided_depth_config_.grid_cell_size = settings_file["GuidedDepth.grid_cell_size"].operator int();
+        guided_depth_config_.min_valid_depth_ratio = settings_file["GuidedDepth.min_valid_depth_ratio"].operator float();
+        std::cout << "[Gaussian Mapper] Guided Depth Dense Init ENABLED (max_pts=" 
+                  << guided_depth_config_.max_points_per_keyframe 
+                  << ", edge_ratio=" << guided_depth_config_.edge_sample_ratio
+                  << ", grid=" << guided_depth_config_.grid_cell_size << ")" << std::endl;
+    } else {
+        guided_depth_config_.enabled = false;
+    }
+
     keyframe_record_interval_ = 
         settings_file["Record.keyframe_record_interval"].operator int();
     all_keyframes_record_interval_ = 
@@ -1353,6 +1390,104 @@ void GaussianMapper::trainForOneIteration()
                 }
             }
         }
+        
+        // ========================================================================
+        // Fisher Information-based Uncertainty Quantification
+        // Computes per-Gaussian importance based on gradient magnitude from backward pass
+        // High Fisher score = Gaussian is important for reconstruction
+        // Low Fisher score = Gaussian contributes little → candidate for pruning
+        // ========================================================================
+        if (fisher_config_.enabled) {
+            int64_t num_gaussians = gaussians_->xyz_.size(0);
+            
+            // Compute Fisher scores at specified interval
+            if (getIteration() % fisher_config_.update_interval == 0) {
+                // Compute Fisher score from gradients
+                // F_i ≈ ||∂L/∂xyz_i||² + λ_s||∂L/∂scale_i||² + ...
+                auto fisher_score = fisher_info::computeFisherScore(
+                    gaussians_->xyz_,
+                    gaussians_->scaling_,
+                    gaussians_->rotation_,
+                    gaussians_->opacity_,
+                    visibility_filter,
+                    fisher_config_
+                );
+                
+                // Update accumulated Fisher scores with EMA
+                auto& uncertainty = gaussians_->getUncertainty();
+                if (uncertainty.fisher_info_score.size(0) != num_gaussians) {
+                    // Size mismatch - reinitialize
+                    uncertainty.fisher_info_score = torch::zeros({num_gaussians},
+                        torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
+                }
+                
+                uncertainty.fisher_info_score = fisher_info::updateFisherEMA(
+                    uncertainty.fisher_info_score,
+                    fisher_score,
+                    fisher_config_.ema_alpha
+                );
+                
+                // Log Fisher statistics periodically
+                if (getIteration() % 500 == 0) {
+                    float fisher_mean = uncertainty.fisher_info_score.mean().item<float>();
+                    float fisher_max = uncertainty.fisher_info_score.max().item<float>();
+                    float fisher_min = uncertainty.fisher_info_score.min().item<float>();
+                    int num_low = (uncertainty.fisher_info_score < fisher_config_.prune_threshold).sum().item<int>();
+                    float pct_low = 100.0f * num_low / num_gaussians;
+                    
+                    std::cout << "[Fisher Info] iter=" << getIteration()
+                              << " | Gaussians=" << num_gaussians
+                              << " | F: mean=" << std::fixed << std::setprecision(4) << fisher_mean
+                              << " min=" << fisher_min
+                              << " max=" << fisher_max
+                              << " | low(<τ)=" << num_low << " (" << std::setprecision(1) << pct_low << "%)"
+                              << " | τ=" << fisher_config_.prune_threshold << std::endl;
+                }
+            }
+            
+            // Apply Fisher-based pruning at specified interval
+            // Only prune after densification phase (when Gaussians are stable)
+            if (getIteration() > opt_params_.densify_until_iter_ &&
+                getIteration() % fisher_config_.prune_interval == 0) {
+                
+                auto& uncertainty = gaussians_->getUncertainty();
+                
+                // Generate prune mask based on Fisher Information
+                auto prune_mask = fisher_info::generateFisherPruneMask(
+                    uncertainty.fisher_info_score,
+                    uncertainty.observation_count.to(torch::kFloat32),
+                    fisher_config_
+                );
+                
+                int num_to_prune = prune_mask.sum().item<int>();
+                
+                if (num_to_prune > 0) {
+                    // Limit pruning to 5% per iteration to avoid sudden changes
+                    int max_prune = static_cast<int>(num_gaussians * 0.05f);
+                    
+                    if (num_to_prune > max_prune) {
+                        // Sort by Fisher score and only prune the lowest ones
+                        auto [sorted_fisher, indices] = torch::sort(uncertainty.fisher_info_score);
+                        auto prune_indices = indices.slice(0, 0, max_prune);
+                        prune_mask = torch::zeros_like(prune_mask);
+                        prune_mask.index_put_({prune_indices}, true);
+                        num_to_prune = max_prune;
+                    }
+                    
+                    // Prune low-information Gaussians
+                    gaussians_->prunePoints(prune_mask);
+                    uncertainty.prune(prune_mask);
+                    
+                    std::cout << "[Fisher Prune] iter=" << getIteration()
+                              << " | Pruned " << num_to_prune << " low-information Gaussians"
+                              << " | Remaining=" << gaussians_->xyz_.size(0) << std::endl;
+                }
+            }
+        }
+        // ========================================================================
+        // END Fisher Information-based Uncertainty
+        // ========================================================================
+        
         auto iter_end_timing = std::chrono::steady_clock::now();
         auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                         iter_end_timing - iter_start_timing).count();
@@ -2005,21 +2140,58 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
         torch::Tensor depth = tensor_utils::cvGpuMat2TorchTensor_Float32(img_depth_gpu);
         depth = depth.flatten(0, 1).contiguous();
 
-        // To clear undisired and unreliable depth
-        torch::Tensor point_valid_flags = torch::full(
-            {depth.size(0)}, false/*true*/, torch::TensorOptions().dtype(torch::kBool).device(device_type_));
-        int nkps_twice = pkf->kps_pixel_.size();
-        int width = pkf->image_width_;
-        for (int kpidx = 0; kpidx < nkps_twice; kpidx += 2) {
-            int idx = static_cast<int>(/*u*/pkf->kps_pixel_[kpidx]) + static_cast<int>(/*v*/pkf->kps_pixel_[kpidx + 1]) * width;
-            point_valid_flags[idx] = true;
+        // Determine point valid flags: Guided Filter dense OR ORB-sparse-only
+        torch::Tensor point_valid_flags;
+
+        if (guided_depth_config_.enabled) {
+            // Edge-aware dense sampling from sensor depth
+            point_valid_flags = guided_depth::selectDenseDepthPixels(
+                img_rgb_gpu, img_depth_gpu,
+                pkf->kps_pixel_,
+                pkf->image_width_, pkf->image_height_,
+                RGBD_min_depth_, RGBD_max_depth_,
+                guided_depth_config_, device_type_);
+
+            if (!point_valid_flags.defined() || point_valid_flags.numel() == 0) {
+                // Fallback: use ORB-only sparse flags
+                std::cout << "[Guided Depth] Fallback to ORB-sparse for KF " << pkf->fid_ << std::endl;
+                point_valid_flags = torch::full(
+                    {depth.size(0)}, false,
+                    torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+                int nkps_twice = pkf->kps_pixel_.size();
+                int width = pkf->image_width_;
+                for (int kpidx = 0; kpidx < nkps_twice; kpidx += 2) {
+                    int idx = static_cast<int>(pkf->kps_pixel_[kpidx]) +
+                              static_cast<int>(pkf->kps_pixel_[kpidx + 1]) * width;
+                    point_valid_flags[idx] = true;
+                }
+                point_valid_flags = torch::logical_and(
+                    point_valid_flags,
+                    torch::where(depth > RGBD_min_depth_, true, false));
+                point_valid_flags = torch::logical_and(
+                    point_valid_flags,
+                    torch::where(depth < RGBD_max_depth_, true, false));
+            }
+            // No need for extra depth range check — selectDenseDepthPixels already checks
+        } else {
+            // Original ORB-only sparse behavior
+            point_valid_flags = torch::full(
+                {depth.size(0)}, false,
+                torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+            int nkps_twice = pkf->kps_pixel_.size();
+            int width = pkf->image_width_;
+            for (int kpidx = 0; kpidx < nkps_twice; kpidx += 2) {
+                int idx = static_cast<int>(pkf->kps_pixel_[kpidx]) +
+                          static_cast<int>(pkf->kps_pixel_[kpidx + 1]) * width;
+                point_valid_flags[idx] = true;
+            }
+            point_valid_flags = torch::logical_and(
+                point_valid_flags,
+                torch::where(depth > RGBD_min_depth_, true, false));
+            point_valid_flags = torch::logical_and(
+                point_valid_flags,
+                torch::where(depth < RGBD_max_depth_, true, false));
         }
-        point_valid_flags = torch::logical_and(
-            point_valid_flags,
-            torch::where(depth > RGBD_min_depth_, true, false));
-        point_valid_flags = torch::logical_and(
-            point_valid_flags,
-            torch::where(depth < RGBD_max_depth_, true, false));
 
         torch::Tensor colors_valid = rgb.index({point_valid_flags});
 

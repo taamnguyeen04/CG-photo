@@ -128,6 +128,18 @@ Fisher.weight_rotation: 0.3            # Weight for rotation gradient
 Fisher.weight_opacity: 0.2             # Weight for opacity gradient
 
 #--------------------------------------------------------------------------------------------
+# Guided Filter Dense Initialization (uses sensor depth + RGB for semi-dense init)
+#--------------------------------------------------------------------------------------------
+
+GuidedDepth.enabled: 1                     # 0=disabled, 1=enabled
+GuidedDepth.max_points_per_keyframe: 3000  # Match baseline ORB density (~1.5K) but better placed
+GuidedDepth.edge_sample_ratio: 0.6         # Ratio of budget for edge pixels (vs uniform)
+GuidedDepth.edge_threshold: 0.1            # Normalized edge strength threshold [0,1]
+GuidedDepth.depth_gradient_threshold: 0.5  # Max depth gradient (m/pixel)
+GuidedDepth.grid_cell_size: 8              # Grid cell size for uniform subsampling
+GuidedDepth.min_valid_depth_ratio: 0.01    # Min valid depth ratio to proceed
+
+#--------------------------------------------------------------------------------------------
 # Viewer Parameters
 #--------------------------------------------------------------------------------------------
 

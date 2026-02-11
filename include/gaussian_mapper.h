@@ -50,6 +50,8 @@
 #include "gaussian_trainer.h"
 
 #include "wavelet_pyramid.h"
+#include "fisher_information.h"
+#include "guided_depth_filter.h"
 
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                                       \
     if (!dir.empty() && !std::filesystem::exists(dir))                                      \
@@ -314,6 +316,8 @@ protected:
 
     bool do_gaus_pyramid_training_;
     wavelet::WaveletPyramidConfig wavelet_config_;  // Wavelet pyramid configuration
+    fisher_info::FisherConfig fisher_config_;       // Fisher Information configuration
+    guided_depth::GuidedDepthConfig guided_depth_config_;  // Guided filter dense depth config
 
     std::filesystem::path result_dir_;
     int keyframe_record_interval_;
