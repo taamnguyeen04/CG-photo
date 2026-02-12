@@ -109,7 +109,7 @@ WaveletPyramid.high_freq_weight: 0.2   # Weight for high-freq loss (0.05-0.2 rec
 #--------------------------------------------------------------------------------------------
 
 WaveletInit.enabled: 0                 # Enable wavelet-guided Gaussian initialization
-WaveletInit.edge_threshold: 0.3        # Min edge strength to add extra Gaussians (0.0-1.0)
+WaveletInit.edge_threshold: 0.05        # Min edge strength to add extra Gaussians (0.0-1.0)
 WaveletInit.max_extra_points: 5000     # Max extra points per keyframe
 
 #--------------------------------------------------------------------------------------------
@@ -132,8 +132,8 @@ Fisher.weight_opacity: 0.2             # Weight for opacity gradient
 #--------------------------------------------------------------------------------------------
 
 GuidedDepth.enabled: 1                     # 0=disabled, 1=enabled
-GuidedDepth.max_points_per_keyframe: 3000  # Match baseline ORB density (~1.5K) but better placed
-GuidedDepth.edge_sample_ratio: 0.6         # Ratio of budget for edge pixels (vs uniform)
+GuidedDepth.max_points_per_keyframe: 1500  # Match baseline ORB density (~1.5K) but better placed
+GuidedDepth.edge_sample_ratio: 0.9         # Ratio of budget for edge pixels (vs uniform)
 GuidedDepth.edge_threshold: 0.1            # Normalized edge strength threshold [0,1]
 GuidedDepth.depth_gradient_threshold: 0.5  # Max depth gradient (m/pixel)
 GuidedDepth.grid_cell_size: 8              # Grid cell size for uniform subsampling
@@ -142,11 +142,12 @@ GuidedDepth.min_valid_depth_ratio: 0.01    # Min valid depth ratio to proceed
 # Geometry-Aware Gaussian Initialization
 #--------------------------------------------------------------------------------------------
 
-GeoAwareInit.enabled: 1                    # 0=disabled, 1=enabled
+GeoAwareInit.enabled: 0                    # 0=disabled, 1=enabled
 GeoAwareInit.flatten_ratio: 0.3            # sz/sx ratio (0.1=very flat, 1.0=sphere)
 GeoAwareInit.opacity_min: 0.05             # Opacity at smooth regions
 GeoAwareInit.opacity_max: 0.3              # Opacity at edge/textured regions
 GeoAwareInit.edge_opacity_threshold: 0.1   # Normalized edge strength for max opacity
+GeoAwareInit.normal_confidence_threshold: 0.3  # Max relative depth gradient for confident normal
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

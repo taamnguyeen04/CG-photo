@@ -9,6 +9,9 @@
  *   - Scale: anisotropic flat disk (thin along surface normal)
  *   - Opacity: higher at textured/edge regions, lower at smooth regions
  *
+ * v2: Adaptive confidence — noisy normals (high depth gradient) fall back
+ *     to identity rotation and isotropic scale to avoid hurting complex scenes.
+ *
  * Part of CG-Photo (Photo-SLAM derivative)
  */
 
@@ -30,41 +33,34 @@ struct GeoAwareConfig
 {
     bool enabled = false;
 
-    float flatten_ratio = 0.3f;          // sz/sx ratio (0.1=very flat, 1.0=sphere)
-    float opacity_min = 0.05f;           // Opacity at smooth regions
-    float opacity_max = 0.3f;            // Opacity at edge/textured regions
-    float edge_opacity_threshold = 0.1f; // Normalized edge strength for max opacity
-    int sobel_ksize = 3;                 // Sobel kernel size for gradient computation
+    float flatten_ratio = 0.3f;              // sz/sx ratio (0.1=very flat, 1.0=sphere)
+    float opacity_min = 0.05f;               // Opacity at smooth regions
+    float opacity_max = 0.3f;                // Opacity at edge/textured regions
+    float edge_opacity_threshold = 0.1f;     // Normalized edge strength for max opacity
+    int sobel_ksize = 3;                     // Sobel kernel size for gradient computation
+    float normal_confidence_threshold = 0.3f; // Max depth gradient magnitude for confident normal
 };
 
 /**
- * Compute surface normal for each valid pixel from depth map using pinhole model.
+ * Compute surface normals AND per-pixel confidence for valid pixels.
  *
- * Given depth D(u,v) and pinhole intrinsics (fx, fy, cx, cy):
- *   X = (u - cx) * D / fx
- *   Y = (v - cy) * D / fy
- *   Z = D
+ * Confidence = 1.0 if depth gradient is small (smooth planar surface)
+ *            = 0.0 if depth gradient > threshold (noisy / complex geometry)
  *
- * The surface normal is computed via cross product of tangent vectors:
- *   dP/du × dP/dv
- *
- * @param depth_map    Depth image as cv::Mat (CV_32FC1), [H x W]
- * @param valid_flags  Boolean tensor [H*W] indicating valid pixels
- * @param fx, fy       Focal lengths
- * @param cx, cy       Principal point
- * @param width        Image width
- * @param height       Image height
- * @param ksize        Sobel kernel size
- * @param device       Torch device
- * @return             Surface normals [N, 3] for valid pixels, in camera frame
+ * @param[out] out_normals     Surface normals [N, 3]
+ * @param[out] out_confidence  Per-pixel confidence [N] in [0, 1]
+ * @return number of valid pixels
  */
-inline torch::Tensor computeSurfaceNormals(
+inline int computeSurfaceNormalsWithConfidence(
     const cv::Mat& depth_map,
     const torch::Tensor& valid_flags,
     float fx, float fy, float cx, float cy,
     int width, int height,
     int ksize,
-    torch::DeviceType device)
+    float confidence_threshold,
+    torch::DeviceType device,
+    torch::Tensor& out_normals,
+    torch::Tensor& out_confidence)
 {
     // Compute depth gradients
     cv::Mat dD_du, dD_dv;
@@ -76,20 +72,24 @@ inline torch::Tensor computeSurfaceNormals(
     dD_du /= sobel_scale;
     dD_dv /= sobel_scale;
 
-    // Count valid pixels
     int N = valid_flags.sum().item<int>();
-    if (N == 0)
-        return torch::zeros({0, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+    if (N == 0) {
+        out_normals = torch::zeros({0, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+        out_confidence = torch::zeros({0}, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+        return 0;
+    }
 
-    // Compute normals on CPU for valid pixels
-    torch::Tensor normals = torch::zeros(
-        {N, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+    // Compute normals and confidence on CPU
+    out_normals = torch::zeros({N, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+    out_confidence = torch::zeros({N}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
 
-    auto normals_acc = normals.accessor<float, 2>();
+    auto n_acc = out_normals.accessor<float, 2>();
+    auto c_acc = out_confidence.accessor<float, 1>();
     auto flags_cpu = valid_flags.to(torch::kCPU);
     auto flags_acc = flags_cpu.accessor<bool, 1>();
 
     int valid_idx = 0;
+    int confident_count = 0;
     for (int v = 0; v < height; ++v) {
         const float* depth_row = depth_map.ptr<float>(v);
         const float* du_row = dD_du.ptr<float>(v);
@@ -100,100 +100,110 @@ inline torch::Tensor computeSurfaceNormals(
             if (!flags_acc[flat_idx]) continue;
 
             float D = depth_row[u];
-            float ddu = du_row[u];  // ∂D/∂u
-            float ddv = dv_row[u];  // ∂D/∂v
+            float ddu = du_row[u];
+            float ddv = dv_row[u];
 
-            // Tangent vectors (from pinhole projection):
-            // dP/du = (D/fx + (u-cx)*ddu/fx, (v-cy)*ddu/fy, ddu)
-            // dP/dv = ((u-cx)*ddv/fx, D/fy + (v-cy)*ddv/fy, ddv)
-            // Normal = dP/du × dP/dv (simplification for common case):
+            // Depth gradient magnitude (normalized by depth to be scale-invariant)
+            float grad_mag = std::sqrt(ddu*ddu + ddv*ddv);
+            float relative_grad = (D > 0.01f) ? grad_mag / D : 1.0f;
 
-            // Simplified normal (valid when depth gradients are small):
+            // Confidence: smooth falloff from 1.0 (flat) to 0.0 (noisy)
+            float conf = std::clamp(1.0f - relative_grad / confidence_threshold, 0.0f, 1.0f);
+            c_acc[valid_idx] = conf;
+            if (conf > 0.1f) ++confident_count;
+
+            // Surface normal
             float nx = -fx * ddu;
             float ny = -fy * ddv;
             float nz = D;
 
-            // Normalize
             float len = std::sqrt(nx*nx + ny*ny + nz*nz);
             if (len > 1e-8f) {
-                normals_acc[valid_idx][0] = nx / len;
-                normals_acc[valid_idx][1] = ny / len;
-                normals_acc[valid_idx][2] = nz / len;
+                n_acc[valid_idx][0] = nx / len;
+                n_acc[valid_idx][1] = ny / len;
+                n_acc[valid_idx][2] = nz / len;
             } else {
-                // Default: pointing towards camera
-                normals_acc[valid_idx][0] = 0.0f;
-                normals_acc[valid_idx][1] = 0.0f;
-                normals_acc[valid_idx][2] = 1.0f;
+                n_acc[valid_idx][0] = 0.0f;
+                n_acc[valid_idx][1] = 0.0f;
+                n_acc[valid_idx][2] = 1.0f;
+                c_acc[valid_idx] = 0.0f;  // no confidence for degenerate normal
             }
             ++valid_idx;
         }
     }
 
-    return normals.to(device);
+    out_normals = out_normals.to(device);
+    out_confidence = out_confidence.to(device);
+    return confident_count;
 }
 
 /**
- * Convert surface normals to quaternions that align local Z-axis to the normal.
+ * Convert surface normals to quaternions, blending with identity based on confidence.
  *
- * Uses Rodrigues' rotation: find rotation from [0,0,1] to normal.
- *   axis = normalize(cross([0,0,1], normal))
- *   angle = acos(dot([0,0,1], normal))
- *   quaternion = [cos(angle/2), axis * sin(angle/2)]
+ * confidence=1: full normal-aligned rotation
+ * confidence=0: identity rotation [1,0,0,0]
  *
- * @param normals  Surface normals [N, 3], unit vectors
- * @return         Quaternions [N, 4] in (w, x, y, z) format
+ * Uses SLERP: q_out = slerp(q_identity, q_normal, confidence)
  */
-inline torch::Tensor normalToQuaternion(const torch::Tensor& normals)
+inline torch::Tensor normalToQuaternionAdaptive(
+    const torch::Tensor& normals,
+    const torch::Tensor& confidence)
 {
     int N = normals.size(0);
-    torch::Tensor quats = torch::zeros(
-        {N, 4}, torch::TensorOptions().dtype(torch::kFloat32).device(normals.device()));
 
     auto normals_cpu = normals.to(torch::kCPU);
+    auto conf_cpu = confidence.to(torch::kCPU);
     auto quats_cpu = torch::zeros({N, 4}, torch::TensorOptions().dtype(torch::kFloat32));
 
     auto n_acc = normals_cpu.accessor<float, 2>();
+    auto c_acc = conf_cpu.accessor<float, 1>();
     auto q_acc = quats_cpu.accessor<float, 2>();
 
     for (int i = 0; i < N; ++i) {
-        float nx = n_acc[i][0];
-        float ny = n_acc[i][1];
-        float nz = n_acc[i][2];
+        float conf = c_acc[i];
 
-        // dot([0,0,1], normal) = nz
-        float cos_angle = std::clamp(nz, -1.0f, 1.0f);
-
-        if (cos_angle > 0.9999f) {
-            // Nearly aligned with Z: identity quaternion
+        // Low confidence → identity quaternion
+        if (conf < 0.05f) {
             q_acc[i][0] = 1.0f;
             q_acc[i][1] = 0.0f;
             q_acc[i][2] = 0.0f;
             q_acc[i][3] = 0.0f;
+            continue;
+        }
+
+        float nx = n_acc[i][0];
+        float ny = n_acc[i][1];
+        float nz = n_acc[i][2];
+
+        float cos_angle = std::clamp(nz, -1.0f, 1.0f);
+
+        float qw, qx, qy, qz;
+        if (cos_angle > 0.9999f) {
+            qw = 1.0f; qx = 0.0f; qy = 0.0f; qz = 0.0f;
         } else if (cos_angle < -0.9999f) {
-            // Opposite to Z: 180-degree rotation around X
-            q_acc[i][0] = 0.0f;
-            q_acc[i][1] = 1.0f;
-            q_acc[i][2] = 0.0f;
-            q_acc[i][3] = 0.0f;
+            qw = 0.0f; qx = 1.0f; qy = 0.0f; qz = 0.0f;
         } else {
-            // cross([0,0,1], [nx,ny,nz]) = [-ny, nx, 0]
             float ax = -ny;
             float ay = nx;
-            // az = 0
-
             float axis_len = std::sqrt(ax*ax + ay*ay);
             ax /= axis_len;
             ay /= axis_len;
 
-            float half_angle = std::acos(cos_angle) * 0.5f;
-            float sin_half = std::sin(half_angle);
-            float cos_half = std::cos(half_angle);
+            // Scale angle by confidence: partial rotation
+            float full_angle = std::acos(cos_angle);
+            float scaled_angle = full_angle * conf;
+            float half = scaled_angle * 0.5f;
 
-            q_acc[i][0] = cos_half;       // w
-            q_acc[i][1] = ax * sin_half;   // x
-            q_acc[i][2] = ay * sin_half;   // y
-            q_acc[i][3] = 0.0f;            // z (axis.z = 0)
+            qw = std::cos(half);
+            qx = ax * std::sin(half);
+            qy = ay * std::sin(half);
+            qz = 0.0f;
         }
+
+        q_acc[i][0] = qw;
+        q_acc[i][1] = qx;
+        q_acc[i][2] = qy;
+        q_acc[i][3] = qz;
     }
 
     return quats_cpu.to(normals.device());
@@ -201,13 +211,6 @@ inline torch::Tensor normalToQuaternion(const torch::Tensor& normals)
 
 /**
  * Compute texture-aware opacity for each valid pixel based on RGB edge strength.
- *
- * @param rgb_image     RGB image as cv::Mat (CV_32FC3 or CV_8UC3)
- * @param valid_flags   Boolean tensor [H*W]
- * @param width, height Image dimensions
- * @param config        GeoAwareConfig
- * @param device        Torch device
- * @return              Opacity values [N, 1] (pre-sigmoid, i.e. inverse_sigmoid applied)
  */
 inline torch::Tensor computeTextureAwareOpacity(
     const cv::Mat& rgb_image,
@@ -216,7 +219,6 @@ inline torch::Tensor computeTextureAwareOpacity(
     const GeoAwareConfig& config,
     torch::DeviceType device)
 {
-    // Convert to grayscale
     cv::Mat gray;
     if (rgb_image.type() == CV_32FC3) {
         cv::Mat rgb8;
@@ -226,19 +228,16 @@ inline torch::Tensor computeTextureAwareOpacity(
         cv::cvtColor(rgb_image, gray, cv::COLOR_RGB2GRAY);
     }
 
-    // Compute edge magnitude
     cv::Mat edge_x, edge_y, edge_mag;
     cv::Sobel(gray, edge_x, CV_32F, 1, 0, config.sobel_ksize);
     cv::Sobel(gray, edge_y, CV_32F, 0, 1, config.sobel_ksize);
     cv::magnitude(edge_x, edge_y, edge_mag);
 
-    // Normalize
     double max_edge;
     cv::minMaxLoc(edge_mag, nullptr, &max_edge);
     if (max_edge > 0)
         edge_mag /= static_cast<float>(max_edge);
 
-    // Compute opacity for valid pixels
     int N = valid_flags.sum().item<int>();
     torch::Tensor opacities = torch::zeros(
         {N, 1}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
@@ -254,15 +253,12 @@ inline torch::Tensor computeTextureAwareOpacity(
             if (!flags_acc[v * width + u]) continue;
 
             float edge = erow[u];
-            // Lerp between opacity_min and opacity_max based on edge strength
             float t = std::clamp(edge / config.edge_opacity_threshold, 0.0f, 1.0f);
             float opacity = config.opacity_min + t * (config.opacity_max - config.opacity_min);
 
-            // Apply inverse sigmoid (since GaussianModel stores pre-sigmoid values)
             opacity = std::clamp(opacity, 1e-5f, 1.0f - 1e-5f);
             float inv_sig = std::log(opacity / (1.0f - opacity));
             opa_acc[valid_idx][0] = inv_sig;
-
             ++valid_idx;
         }
     }
@@ -271,22 +267,10 @@ inline torch::Tensor computeTextureAwareOpacity(
 }
 
 /**
- * Compute geometry-aware initial parameters for Gaussians.
+ * Compute geometry-aware initial parameters for Gaussians (v2: adaptive).
  *
- * Combines: normal-aligned rotation, anisotropic scaling, texture-aware opacity.
- *
- * @param depth_map        Depth image (CV_32FC1) [H x W]
- * @param rgb_image        RGB image [H x W x 3]  
- * @param valid_flags      Boolean tensor [H*W] indicating valid pixels
- * @param new_point_cloud  3D points [N, 3] (already computed)
- * @param fx, fy, cx, cy   Camera intrinsics
- * @param width, height    Image dimensions
- * @param config           GeoAwareConfig
- * @param device           Torch device
- * @param[out] out_rotations   Quaternions [N, 4]
- * @param[out] out_scales      Log-scales [N, 3]
- * @param[out] out_opacities   Pre-sigmoid opacities [N, 1]
- * @return true on success
+ * Key difference from v1: uses per-pixel normal confidence to blend between
+ * geometry-aware init and default init, avoiding noisy normals on complex geometry.
  */
 inline bool computeGeoAwareParams(
     const cv::Mat& depth_map,
@@ -304,10 +288,13 @@ inline bool computeGeoAwareParams(
     int N = new_point_cloud.size(0);
     if (N == 0) return false;
 
-    // 1. Compute surface normals from depth
-    torch::Tensor normals = computeSurfaceNormals(
+    // 1. Compute surface normals WITH confidence
+    torch::Tensor normals, confidence;
+    int confident_count = computeSurfaceNormalsWithConfidence(
         depth_map, valid_flags, fx, fy, cx, cy,
-        width, height, config.sobel_ksize, device);
+        width, height, config.sobel_ksize,
+        config.normal_confidence_threshold,
+        device, normals, confidence);
 
     if (normals.size(0) != N) {
         std::cerr << "[GeoAware] Normal count mismatch: " << normals.size(0)
@@ -315,30 +302,37 @@ inline bool computeGeoAwareParams(
         return false;
     }
 
-    // 2. Normal → rotation quaternion
-    out_rotations = normalToQuaternion(normals);
+    // 2. Adaptive rotation: blend with identity based on confidence
+    out_rotations = normalToQuaternionAdaptive(normals, confidence);
 
-    // 3. Anisotropic scaling: keep KNN-based tangent scale, flatten normal direction
-    // Note: distCUDA2 will be called by the caller (in increasePcd).
-    // Here we just prepare a scale modifier tensor.
-    // We'll pass the flatten_ratio and let increasePcd apply it.
-    // Actually, better to compute full scales here to avoid modifying distCUDA2 flow.
-    // We compute scales = log(sqrt(distCUDA2)) then modify z-component.
-    // But distCUDA2 requires the extern function... so let the caller handle base scales.
-    // We return a scale_modifier [N, 3] = [1, 1, flatten_ratio]
-    torch::Tensor scale_modifier = torch::ones(
-        {N, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(device));
-    // Apply log(flatten_ratio) as additive modifier to the z-scale (which is in log-space)
-    scale_modifier.index({torch::indexing::Slice(), 2}) = config.flatten_ratio;
-    // Store as log-scale modifier: log(flatten_ratio) to be ADDED to log-scale
-    out_scales = torch::log(scale_modifier);  // [0, 0, log(flatten_ratio)]
+    // 3. Adaptive anisotropic scaling: flatten only where confident
+    // scale_mod[i] = [0, 0, log(lerp(1.0, flatten_ratio, confidence[i]))]
+    // confidence=1 → log(flatten_ratio), confidence=0 → log(1.0)=0
+    {
+        auto conf_cpu = confidence.to(torch::kCPU);
+        torch::Tensor scale_mod = torch::zeros(
+            {N, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+        auto s_acc = scale_mod.accessor<float, 2>();
+        auto c_acc = conf_cpu.accessor<float, 1>();
 
-    // 4. Texture-aware opacity
+        for (int i = 0; i < N; ++i) {
+            float c = c_acc[i];
+            // Lerp between 1.0 (isotropic) and flatten_ratio
+            float ratio = 1.0f - c * (1.0f - config.flatten_ratio);
+            s_acc[i][2] = std::log(ratio);  // only modify z
+        }
+        out_scales = scale_mod.to(device);
+    }
+
+    // 4. Texture-aware opacity (unchanged — always beneficial)
     out_opacities = computeTextureAwareOpacity(
         rgb_image, valid_flags, width, height, config, device);
 
-    std::cout << "[GeoAware] Computed: " << N << " pts | "
-              << "flatten=" << config.flatten_ratio
+    float conf_pct = (N > 0) ? 100.0f * confident_count / N : 0.0f;
+    std::cout << "[GeoAware] " << N << " pts | confident=" 
+              << confident_count << " (" << std::fixed << std::setprecision(0) 
+              << conf_pct << std::defaultfloat << std::setprecision(6)
+              << "%) | flatten=" << config.flatten_ratio
               << " opacity=[" << config.opacity_min << "," << config.opacity_max << "]"
               << std::endl;
 

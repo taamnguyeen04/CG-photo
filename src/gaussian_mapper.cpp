@@ -396,8 +396,10 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         geo_aware_config_.opacity_min = settings_file["GeoAwareInit.opacity_min"].operator float();
         geo_aware_config_.opacity_max = settings_file["GeoAwareInit.opacity_max"].operator float();
         geo_aware_config_.edge_opacity_threshold = settings_file["GeoAwareInit.edge_opacity_threshold"].operator float();
+        geo_aware_config_.normal_confidence_threshold = settings_file["GeoAwareInit.normal_confidence_threshold"].operator float();
         std::cout << "[Gaussian Mapper] GeoAware Init ENABLED (flatten=" 
                   << geo_aware_config_.flatten_ratio 
+                  << ", conf_th=" << geo_aware_config_.normal_confidence_threshold
                   << ", opacity=[" << geo_aware_config_.opacity_min
                   << "," << geo_aware_config_.opacity_max << "])" << std::endl;
     } else {
