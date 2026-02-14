@@ -75,21 +75,21 @@ Optimization.densify_until_iter: 1800
 Optimization.densify_grad_threshold: 0.0001
 
 # Loss Weights (Depth-Photo-SLAM)
-Optimization.lambda_geo: 0.7       # L_geo: Sensor depth L1 loss
+Optimization.lambda_geo: 0.0       # L_geo: Sensor depth L1 loss
 Optimization.lambda_smooth: 0   # L_smooth: Edge-aware smoothness
-Optimization.lambda_var: 0.15      # L_var: CG-SLAM depth variance (paper ω₆ = 0.15)
+Optimization.lambda_var: 0.0      # L_var: CG-SLAM depth variance (paper ω₆ = 0.15)
 Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
 Optimization.lambda_align: 0.0    # L_align: Depth alpha-median alignment
 Optimization.lambda_reg: 0.0       # L_reg: Planar regularization (MonoGS++)
-Optimization.lambda_g1: 0.4        # L_g1: First-order gradient loss (2D-3DGS)
-Optimization.lambda_g2: 0.4        # L_g2: Second-order gradient loss (2D-3DGS)
+Optimization.lambda_g1: 0.0        # L_g1: First-order gradient loss (2D-3DGS)
+Optimization.lambda_g2: 0.0        # L_g2: Second-order gradient loss (2D-3DGS)
 Optimization.gradient_log_interval: 0  # Debug: gradient conflict log every N iters (0=off, 100=recommended)
 
 #--------------------------------------------------------------------------------------------
 # CG-SLAM Uncertainty Pruning
 #--------------------------------------------------------------------------------------------
 
-Uncertainty.enable: 1              # Enable uncertainty-based pruning
+Uncertainty.enable: 0              # Enable uncertainty-based pruning
 Uncertainty.tau: 0.025             # Paper threshold τ for high-uncertainty Gaussians
 Uncertainty.prune_interval: 100    # Reduce opacity every N iterations
 Uncertainty.ema_alpha: 0.1         # EMA smoothing factor
@@ -98,7 +98,7 @@ Uncertainty.ema_alpha: 0.1         # EMA smoothing factor
 # Wavelet Pyramid (optional - replaces Gaussian pyramid for better edge preservation)
 #--------------------------------------------------------------------------------------------
 
-WaveletPyramid.enabled: 1              # 0=Disabled, 1=Enable adaptive densification
+WaveletPyramid.enabled: 0              # 0=Disabled, 1=Enable adaptive densification
 WaveletPyramid.edge_method: "sobel"    # "sobel" (faster) or "wavelet" (multi-scale)
 WaveletPyramid.type: "haar"            # Wavelet type: haar, db2, db4 (only for wavelet method)
 WaveletPyramid.use_high_freq_loss: 1   # Add high-frequency edge loss (LH, HL, HH subbands)
@@ -131,7 +131,7 @@ Fisher.weight_opacity: 0.2             # Weight for opacity gradient
 # Guided Filter Dense Initialization (uses sensor depth + RGB for semi-dense init)
 #--------------------------------------------------------------------------------------------
 
-GuidedDepth.enabled: 1                     # 0=disabled, 1=enabled
+GuidedDepth.enabled: 0                     # 0=disabled, 1=enabled
 GuidedDepth.max_points_per_keyframe: 1500  # Match baseline ORB density (~1.5K) but better placed
 GuidedDepth.edge_sample_ratio: 0.9         # Ratio of budget for edge pixels (vs uniform)
 GuidedDepth.edge_threshold: 0.1            # Normalized edge strength threshold [0,1]

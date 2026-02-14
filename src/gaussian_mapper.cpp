@@ -372,6 +372,21 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         fisher_config_.enabled = false;
     }
 
+    // CG-SLAM Uncertainty pruning configuration
+    if (settings_file["Uncertainty.enable"].operator int()) {
+        uncertainty_enabled_ = true;
+        uncertainty_tau_ = settings_file["Uncertainty.tau"].operator float();
+        uncertainty_prune_interval_ = settings_file["Uncertainty.prune_interval"].operator int();
+        uncertainty_ema_alpha_ = settings_file["Uncertainty.ema_alpha"].operator float();
+        std::cout << "[Gaussian Mapper] Uncertainty Pruning ENABLED (tau=" 
+                  << uncertainty_tau_ 
+                  << ", interval=" << uncertainty_prune_interval_ 
+                  << ", ema_alpha=" << uncertainty_ema_alpha_ << ")" << std::endl;
+    } else {
+        uncertainty_enabled_ = false;
+        std::cout << "[Gaussian Mapper] Uncertainty Pruning DISABLED" << std::endl;
+    }
+
     // Guided Filter Dense Depth Initialization
     if (settings_file["GuidedDepth.enabled"].operator int()) {
         guided_depth_config_.enabled = true;
@@ -1311,15 +1326,10 @@ void GaussianMapper::trainForOneIteration()
         
         // CG-SLAM: Uncertainty-based pruning (Eq. 13 approximation)
         // Paper: νᵢ = (1/(M₁+...+Mₖ)) Σ Σ αᵢᵏ·ᵖ Tᵢᵏ·ᵖ (Dₚᵏ - dᵢᵏ)²
-        // Approximation: Use visibility_filter to identify visible Gaussians,
-        // then estimate per-Gaussian uncertainty from rendered uncertainty map
-        const int uncertainty_prune_interval = 100;   // Paper uses interval based on mapping iterations
-        const float uncertainty_tau = 0.025f;         // Paper threshold τ = 0.025
-        const float uncertainty_ema_alpha = 0.1f;     // EMA smoothing
-        
-        // Only run after densification phase (when Gaussians are stable)
-        if (getIteration() > opt_params_.densify_until_iter_ && 
-            getIteration() % uncertainty_prune_interval == 0 &&
+        // Only runs when Uncertainty.enable: 1 in YAML config
+        if (uncertainty_enabled_ &&
+            getIteration() > opt_params_.densify_until_iter_ && 
+            getIteration() % uncertainty_prune_interval_ == 0 &&
             has_gt_depth) {
             
             int64_t num_gaussians = gaussians_->xyz_.size(0);
@@ -1370,11 +1380,11 @@ void GaussianMapper::trainForOneIteration()
             
             // Count how many Gaussians will have opacity reduced
             auto& unc = gaussians_->getUncertainty();
-            int num_high_before = (unc.depth_uncertainty > uncertainty_tau).sum().item<int>();
+            int num_high_before = (unc.depth_uncertainty > uncertainty_tau_).sum().item<int>();
             
-            // CG-SLAM: Reduce opacity for high-uncertainty Gaussians (τ > 0.025)
+            // CG-SLAM: Reduce opacity for high-uncertainty Gaussians (τ > threshold)
             // Paper: "primitives with νᵢ > τ will be manually reduced to a low-opacity level"
-            gaussians_->uncertaintyPrune(uncertainty_tau);
+            gaussians_->uncertaintyPrune(uncertainty_tau_);
             
             // Track cumulative statistics (update static counter)
             static int64_t total_opacity_reduced = 0;
@@ -1387,7 +1397,7 @@ void GaussianMapper::trainForOneIteration()
             if (getIteration() % 500 == 0 || num_high_before > 0) {
                 float unc_mean = unc.depth_uncertainty.mean().item<float>();
                 float unc_max = unc.depth_uncertainty.max().item<float>();
-                int num_high = (unc.depth_uncertainty > uncertainty_tau).sum().item<int>();
+                int num_high = (unc.depth_uncertainty > uncertainty_tau_).sum().item<int>();
                 float pct_high = 100.0f * num_high / num_gaussians;
                 float pct_cumulative = 100.0f * total_opacity_reduced / num_gaussians;
                 
@@ -1396,7 +1406,7 @@ void GaussianMapper::trainForOneIteration()
                           << " | ν: mean=" << std::fixed << std::setprecision(4) << unc_mean 
                           << " max=" << unc_max
                           << " | high(>τ)=" << num_high << " (" << std::setprecision(1) << pct_high << "%)"
-                          << " | τ=" << uncertainty_tau << std::endl;
+                          << " | τ=" << uncertainty_tau_ << std::endl;
                 
                 if (num_affected_this_call > 0) {
                     std::cout << "[CG-SLAM Uncertainty] Opacity reduced this iteration: " 

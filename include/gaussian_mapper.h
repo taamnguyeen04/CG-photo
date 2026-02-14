@@ -324,6 +324,12 @@ protected:
     guided_depth::GuidedDepthConfig guided_depth_config_;  // Guided filter dense depth config
     geo_aware::GeoAwareConfig geo_aware_config_;            // Geometry-aware init config
 
+    // CG-SLAM Uncertainty pruning configuration (from YAML)
+    bool uncertainty_enabled_ = false;
+    float uncertainty_tau_ = 0.025f;
+    int uncertainty_prune_interval_ = 100;
+    float uncertainty_ema_alpha_ = 0.1f;
+
     std::filesystem::path result_dir_;
     int keyframe_record_interval_;
     int all_keyframes_record_interval_;

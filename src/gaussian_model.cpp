@@ -1258,7 +1258,7 @@ void GaussianModel::uncertaintyPrune(float threshold)
     
     if (num_affected > max_affect) {
         // Sort by uncertainty and only affect the worst ones
-        auto [sorted_uncertainty, indices] = torch::sort(uncertainty_.depth_uncertainty, /*descending=*/true);
+        auto [sorted_uncertainty, indices] = torch::sort(uncertainty_.depth_uncertainty, /*dim=*/0, /*descending=*/true);
         auto top_indices = indices.slice(0, 0, max_affect);
         high_uncertainty_mask = torch::zeros_like(high_uncertainty_mask);
         high_uncertainty_mask.index_put_({top_indices}, true);
