@@ -200,9 +200,16 @@ target_link_libraries(replica_mono
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
-# Replica Monocular
+# Replica RGBD
 add_executable(replica_rgbd examples/replica_rgbd.cpp)
 target_link_libraries(replica_rgbd
+    gaussian_viewer    
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
+# Replica RGBD with GT Poses (for ablation study)
+add_executable(replica_rgbd_gt examples/replica_rgbd_gt.cpp)
+target_link_libraries(replica_rgbd_gt
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)

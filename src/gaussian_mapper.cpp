@@ -421,6 +421,91 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         geo_aware_config_.enabled = false;
     }
 
+    // Error-Guided Densification (SIG-Densify)
+    if (!settings_file["EGD.enabled"].empty() && settings_file["EGD.enabled"].operator int()) {
+        egd_config_.enabled = true;
+        if (!settings_file["EGD.blur_kernel"].empty())
+            egd_config_.blur_kernel = settings_file["EGD.blur_kernel"].operator int();
+        if (!settings_file["EGD.e_high_threshold"].empty())
+            egd_config_.e_high_threshold = settings_file["EGD.e_high_threshold"].operator float();
+        if (!settings_file["EGD.e_low_reject_ratio"].empty())
+            egd_config_.e_low_reject_ratio = settings_file["EGD.e_low_reject_ratio"].operator float();
+        if (!settings_file["EGD.mig_threshold"].empty())
+            egd_config_.mig_threshold = settings_file["EGD.mig_threshold"].operator float();
+        if (!settings_file["EGD.default_candidate_opacity"].empty())
+            egd_config_.default_candidate_opacity = settings_file["EGD.default_candidate_opacity"].operator float();
+        if (!settings_file["EGD.redundancy_grid_cell"].empty())
+            egd_config_.redundancy_grid_cell = settings_file["EGD.redundancy_grid_cell"].operator int();
+        if (!settings_file["EGD.max_per_cell"].empty())
+            egd_config_.max_per_cell = settings_file["EGD.max_per_cell"].operator int();
+        if (!settings_file["EGD.budget_per_keyframe"].empty())
+            egd_config_.budget_per_keyframe = settings_file["EGD.budget_per_keyframe"].operator int();
+        if (!settings_file["EGD.high_confidence_mig"].empty())
+            egd_config_.high_confidence_mig = settings_file["EGD.high_confidence_mig"].operator float();
+        if (!settings_file["EGD.mid_confidence_mig"].empty())
+            egd_config_.mid_confidence_mig = settings_file["EGD.mid_confidence_mig"].operator float();
+        if (!settings_file["EGD.opacity_high"].empty())
+            egd_config_.opacity_high = settings_file["EGD.opacity_high"].operator float();
+        if (!settings_file["EGD.opacity_mid"].empty())
+            egd_config_.opacity_mid = settings_file["EGD.opacity_mid"].operator float();
+        if (!settings_file["EGD.opacity_low"].empty())
+            egd_config_.opacity_low = settings_file["EGD.opacity_low"].operator float();
+        if (!settings_file["EGD.scale_penalty_mid"].empty())
+            egd_config_.scale_penalty_mid = settings_file["EGD.scale_penalty_mid"].operator float();
+        if (!settings_file["EGD.scale_penalty_low"].empty())
+            egd_config_.scale_penalty_low = settings_file["EGD.scale_penalty_low"].operator float();
+        std::cout << "[Gaussian Mapper] Error-Guided Densification ENABLED (blur_k="
+                  << egd_config_.blur_kernel
+                  << ", e_high_th=" << egd_config_.e_high_threshold
+                  << ", mig_th=" << egd_config_.mig_threshold
+                  << ", budget=" << egd_config_.budget_per_keyframe << ")" << std::endl;
+    } else {
+        egd_config_.enabled = false;
+    }
+
+    // Depth Back-Projection Initialization (stride-based)
+    if (!settings_file["DepthBackproject.enabled"].empty() && settings_file["DepthBackproject.enabled"].operator int()) {
+        depth_backproject_config_.enabled = true;
+        if (!settings_file["DepthBackproject.mode"].empty())
+            depth_backproject_config_.mode = settings_file["DepthBackproject.mode"].operator int();
+        if (!settings_file["DepthBackproject.stride"].empty())
+            depth_backproject_config_.stride = settings_file["DepthBackproject.stride"].operator int();
+        if (!settings_file["DepthBackproject.stride_min"].empty())
+            depth_backproject_config_.stride_min = settings_file["DepthBackproject.stride_min"].operator int();
+        if (!settings_file["DepthBackproject.stride_max"].empty())
+            depth_backproject_config_.stride_max = settings_file["DepthBackproject.stride_max"].operator int();
+        if (!settings_file["DepthBackproject.block_size"].empty())
+            depth_backproject_config_.block_size = settings_file["DepthBackproject.block_size"].operator int();
+        if (!settings_file["DepthBackproject.edge_threshold"].empty())
+            depth_backproject_config_.edge_threshold = settings_file["DepthBackproject.edge_threshold"].operator float();
+        if (!settings_file["DepthBackproject.edge_ratio"].empty())
+            depth_backproject_config_.edge_ratio = settings_file["DepthBackproject.edge_ratio"].operator float();
+        if (!settings_file["DepthBackproject.max_points_per_keyframe"].empty())
+            depth_backproject_config_.max_points_per_keyframe = settings_file["DepthBackproject.max_points_per_keyframe"].operator int();
+        if (!settings_file["DepthBackproject.min_depth"].empty())
+            depth_backproject_config_.min_depth = settings_file["DepthBackproject.min_depth"].operator float();
+        if (!settings_file["DepthBackproject.max_depth"].empty())
+            depth_backproject_config_.max_depth = settings_file["DepthBackproject.max_depth"].operator float();
+        if (depth_backproject_config_.mode == 1) {
+            std::cout << "[Gaussian Mapper] Depth Back-Projection ENABLED (ADAPTIVE"
+                      << ", stride=[" << depth_backproject_config_.stride_min
+                      << "," << depth_backproject_config_.stride_max << "]"
+                      << ", block=" << depth_backproject_config_.block_size
+                      << ", edge_th=" << depth_backproject_config_.edge_threshold
+                      << ", ratio=" << depth_backproject_config_.edge_ratio
+                      << ", budget=" << depth_backproject_config_.max_points_per_keyframe
+                      << ", depth=[" << depth_backproject_config_.min_depth
+                      << "," << depth_backproject_config_.max_depth << "])" << std::endl;
+        } else {
+            std::cout << "[Gaussian Mapper] Depth Back-Projection ENABLED (UNIFORM"
+                      << ", stride=" << depth_backproject_config_.stride
+                      << ", depth=[" << depth_backproject_config_.min_depth
+                      << "," << depth_backproject_config_.max_depth << "])" << std::endl;
+        }
+    } else {
+        depth_backproject_config_.enabled = false;
+    }
+
     keyframe_record_interval_ = 
         settings_file["Record.keyframe_record_interval"].operator int();
     all_keyframes_record_interval_ = 
@@ -1565,6 +1650,68 @@ void GaussianMapper::signalStop(const bool going_to_stop)
     this->stopped_ = going_to_stop;
 }
 
+void GaussianMapper::setGTPoses(const std::vector<Sophus::SE3f>& gt_poses)
+{
+    gt_frame_poses_ = gt_poses;
+    std::cout << "[GaussianMapper] GT poses set: " << gt_frame_poses_.size()
+              << " frame poses available." << std::endl;
+}
+
+Sophus::SE3f GaussianMapper::getGTPoseForKF(unsigned long kf_id, const Sophus::SE3f& fallback)
+{
+    if (gt_frame_poses_.empty()) return fallback;
+    if (!gt_alignment_computed_) return fallback;  // Alignment not ready yet
+
+    // Look up the KeyFrame in ORB-SLAM3 atlas to get its frame index
+    auto pMap = pSLAM_->getAtlas()->GetCurrentMap();
+    if (!pMap) return fallback;
+
+    auto vpKFs = pMap->GetAllKeyFrames();
+    for (auto* pKF : vpKFs) {
+        if (pKF && pKF->mnId == kf_id) {
+            unsigned long frameId = pKF->mnFrameId;
+            if (frameId < gt_frame_poses_.size()) {
+                // Apply alignment: convert GT pose from GT world to ORB-SLAM3 world
+                // Tcw_aligned = Tcw_gt * S_inv  (where S maps GT_world -> ORB_world)
+                return gt_frame_poses_[frameId] * gt_alignment_S_inv_;
+            }
+            break;
+        }
+    }
+    return fallback;
+}
+
+void GaussianMapper::computeGTAlignment(const Sophus::SE3f& orb_Tcw, unsigned long frame_id)
+{
+    if (gt_alignment_computed_) return;
+    if (frame_id >= gt_frame_poses_.size()) return;
+
+    // Compute alignment transform S such that:
+    //   p_orb_world = S * p_gt_world
+    // From the first keyframe:
+    //   Twc_orb = orb_Tcw^-1  (camera position in ORB world)
+    //   Twc_gt  = gt_Tcw^-1   (camera position in GT world)
+    //   S = Twc_orb * Twc_gt^-1
+    // Then for any GT pose: Tcw_aligned = Tcw_gt * S^-1
+    //   S^-1 = Twc_gt * Twc_orb^-1 = Twc_gt * orb_Tcw
+
+    Sophus::SE3f gt_Tcw = gt_frame_poses_[frame_id];
+    Sophus::SE3f Twc_gt = gt_Tcw.inverse();
+
+    // S_inv = Twc_gt * Tcw_orb  (maps: ORB_world -> GT_world -> back)
+    // We need: Tcw_aligned = Tcw_gt * S_inv
+    // Where S_inv transforms from ORB_world -> GT_world
+    // S = Twc_orb * Tcw_gt  (maps: GT_world -> camera -> ORB_world)
+    // S_inv = Twc_gt * Tcw_orb  (maps: ORB_world -> camera -> GT_world)
+    // Tcw_aligned = Tcw_gt_i * S_inv = Tcw_gt_i * Twc_gt_0 * Tcw_orb_0
+    gt_alignment_S_inv_ = Twc_gt * orb_Tcw;
+    gt_alignment_computed_ = true;
+
+    std::cout << "[GaussianMapper] GT alignment computed from frame " << frame_id
+              << ". ORB-SLAM3 pose: t=" << orb_Tcw.inverse().translation().transpose()
+              << ", GT pose: t=" << Twc_gt.translation().transpose() << std::endl;
+}
+
 bool GaussianMapper::hasMetInitialMappingConditions()
 {
     if (!pSLAM_->isShutDown() &&
@@ -2167,10 +2314,27 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
         torch::Tensor depth = tensor_utils::cvGpuMat2TorchTensor_Float32(img_depth_gpu);
         depth = depth.flatten(0, 1).contiguous();
 
-        // Determine point valid flags: Guided Filter dense OR ORB-sparse-only
+        // Determine point valid flags: DepthBackproject OR Guided Filter dense OR ORB-sparse-only
         torch::Tensor point_valid_flags;
 
-        if (guided_depth_config_.enabled) {
+        if (depth_backproject_config_.enabled) {
+            if (depth_backproject_config_.mode == 1) {
+                // Adaptive stride: edge-aware block-based sampling
+                point_valid_flags = depth_backproject::selectAdaptiveStridePixels(
+                    depth, img_rgb_gpu,
+                    pkf->image_width_, pkf->image_height_,
+                    depth_backproject_config_, device_type_);
+            } else {
+                // Uniform stride
+                point_valid_flags = depth_backproject::selectStrideDepthPixels(
+                    depth, pkf->image_width_, pkf->image_height_,
+                    depth_backproject_config_, device_type_);
+                std::cout << "[DepthBackproject Uniform] KF " << pkf->fid_
+                          << " | stride=" << depth_backproject_config_.stride
+                          << " | selected=" << point_valid_flags.sum().item<int>()
+                          << " pts" << std::endl;
+            }
+        } else if (guided_depth_config_.enabled) {
             // Edge-aware dense sampling from sensor depth
             point_valid_flags = guided_depth::selectDenseDepthPixels(
                 img_rgb_gpu, img_depth_gpu,
@@ -2378,8 +2542,149 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
                 has_geo_aware = false;
             }
         }
+        // ===== Error-Guided Densification (EGD / SIG-Densify) =====
+        // Filter candidates based on rendering error analysis + marginal information gain
+        if (egd_config_.enabled && initial_mapped_ && gaussians_->xyz_.size(0) > 5000) {
+            try {
+                torch::NoGradGuard no_grad;
+                
+                // Lightweight render from keyframe viewpoint
+                auto render_pkg = GaussianRenderer::render(
+                    pkf, pkf->image_height_, pkf->image_width_,
+                    gaussians_, pipe_params_, background_, override_color_);
+                auto rendered_image = std::get<0>(render_pkg);   // [C, H, W]
+                auto rendered_depth = std::get<4>(render_pkg);   // [1, H, W]
+                
+                auto gt_image = pkf->original_image_;            // [C, H, W]
+                
+                // Get camera intrinsics
+                Camera& cam_egd = scene_->cameras_.at(pkf->camera_id_);
+                float fx = cam_egd.params_[0];
+                float fy = cam_egd.params_[1];
+                float cx = cam_egd.params_[2];
+                float cy = cam_egd.params_[3];
+                
+                // Compute world-to-camera transform for projection
+                Sophus::SE3f Tcw_se3 = pkf->getPosef();
+                torch::Tensor Tcw_tensor = tensor_utils::EigenMatrix2TorchTensor(
+                    Tcw_se3.matrix(), device_type_);
+                
+                // Project candidate 3D points to pixel coordinates
+                auto [cand_pixels, cand_depths, cand_valid] = 
+                    error_guided::computeCandidatePixelsAndDepths(
+                        points3D_valid, Tcw_tensor,
+                        fx, fy, cx, cy,
+                        pkf->image_width_, pkf->image_height_);
+                
+                // Only process points with valid projections
+                int n_valid_proj = cand_valid.sum().item<int>();
+                
+                if (n_valid_proj > 50) {
+                    auto valid_indices = torch::nonzero(cand_valid).squeeze(1);
+                    auto valid_points = points3D_valid.index({valid_indices});
+                    auto valid_colors = colors_valid.index({valid_indices});
+                    auto valid_pixels = cand_pixels.index({valid_indices}).to(torch::kInt32);
+                    auto valid_depths = cand_depths.index({valid_indices});
+                    
+                    // Run error-guided selection
+                    // Create ORB bypass mask: mark candidates that are ORB keypoints
+                    auto orb_bypass = torch::zeros({n_valid_proj}, 
+                        torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+                    {
+                        // Build set of ORB pixel linear indices
+                        int width = pkf->image_width_;
+                        std::unordered_set<int> orb_pixel_set;
+                        int nkps_twice = pkf->kps_pixel_.size();
+                        for (int kpidx = 0; kpidx < nkps_twice; kpidx += 2) {
+                            int orb_u = static_cast<int>(pkf->kps_pixel_[kpidx]);
+                            int orb_v = static_cast<int>(pkf->kps_pixel_[kpidx + 1]);
+                            orb_pixel_set.insert(orb_v * width + orb_u);
+                        }
+                        // Check each valid candidate pixel against ORB set
+                        auto vp_cpu = valid_pixels.cpu();
+                        auto vp_u = vp_cpu.index({torch::indexing::Slice(), 0}).data_ptr<int32_t>();
+                        auto vp_v = vp_cpu.index({torch::indexing::Slice(), 1}).data_ptr<int32_t>();
+                        auto orb_bypass_cpu = torch::zeros({n_valid_proj}, torch::TensorOptions().dtype(torch::kBool));
+                        auto orb_data = orb_bypass_cpu.data_ptr<bool>();
+                        for (int i = 0; i < n_valid_proj; ++i) {
+                            int lin = vp_v[i] * width + vp_u[i];
+                            if (orb_pixel_set.count(lin)) orb_data[i] = true;
+                        }
+                        orb_bypass = orb_bypass_cpu.to(device_type_);
+                    }
+                    
+                    auto egd_result = error_guided::errorGuidedSelect(
+                        valid_points, valid_colors,
+                        valid_pixels, valid_depths,
+                        rendered_image, gt_image, rendered_depth,
+                        pkf->image_width_, pkf->image_height_,
+                        egd_config_, orb_bypass);
+                    
+                    std::cout << "[EGD] KF " << pkf->fid_
+                              << " | total=" << egd_result.n_total
+                              << " efd_rej=" << egd_result.n_efd_rejected
+                              << " mig_rej=" << egd_result.n_mig_rejected
+                              << " redund=" << egd_result.n_redundancy_rejected
+                              << " budget=" << egd_result.n_budget_rejected
+                              << " accepted=" << egd_result.n_accepted << std::endl;
+                    
+                    if (egd_result.n_accepted > 0) {
+                        // Replace candidates with accepted ones
+                        points3D_valid = egd_result.accepted_points;
+                        colors_valid = egd_result.accepted_colors;
+                        
+                        // Apply confidence-weighted opacity if GeoAware is active
+                        if (has_geo_aware) {
+                            // Re-select GeoAware params for accepted indices
+                            auto accepted_mask_in_valid = egd_result.accepted_mask;
+                            // Map accepted indices back to original geo_params
+                            auto geo_indices = valid_indices.index({torch::nonzero(accepted_mask_in_valid).squeeze(1)});
+                            
+                            if (geo_indices.numel() > 0 && geo_indices.max().item<int64_t>() < geo_rotations.size(0)) {
+                                geo_rotations = geo_rotations.index({geo_indices});
+                                geo_scale_mods = geo_scale_mods.index({geo_indices});
+                                geo_opacities = geo_opacities.index({geo_indices});
+                                
+                                // Override opacity based on confidence level
+                                for (int ci = 0; ci < egd_result.n_accepted; ++ci) {
+                                    int conf = egd_result.confidence_levels[ci].item<int>();
+                                    float opa_val;
+                                    if (conf == 2)
+                                        opa_val = egd_config_.opacity_high;
+                                    else if (conf == 1)
+                                        opa_val = egd_config_.opacity_mid;
+                                    else
+                                        opa_val = egd_config_.opacity_low;
+                                    // logit transform: logit(p) = log(p / (1-p))
+                                    geo_opacities[ci][0] = std::log(opa_val / (1.0f - opa_val));
+                                    
+                                    // Scale penalty
+                                    if (conf == 1)
+                                        geo_scale_mods[ci] *= egd_config_.scale_penalty_mid;
+                                    else if (conf == 0)
+                                        geo_scale_mods[ci] *= egd_config_.scale_penalty_low;
+                                }
+                            } else {
+                                has_geo_aware = false;  // Fallback
+                            }
+                        }
+                    } else {
+                        // All rejected — use empty tensors
+                        points3D_valid = torch::zeros({0, 3}, torch::TensorOptions().device(device_type_));
+                        colors_valid = torch::zeros({0, 3}, torch::TensorOptions().device(device_type_));
+                        has_geo_aware = false;
+                        std::cout << "[EGD] KF " << pkf->fid_ << " | All candidates rejected" << std::endl;
+                    }
+                }
+                // else: too few valid projections, skip EGD filtering
+            } catch (const std::exception& e) {
+                std::cerr << "[EGD] Warning: " << e.what() << " — using unfiltered candidates" << std::endl;
+                // Fall through: use original points3D_valid and colors_valid
+            }
+        }
 
         // Add new points to the cache
+        if (points3D_valid.size(0) > 0) {
         if (depth_cached_ == 0) {
             depth_cache_points_ = points3D_valid;
             depth_cache_colors_ = colors_valid;
@@ -2398,6 +2703,7 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
                 depth_cache_opacities_ = torch::cat({depth_cache_opacities_, geo_opacities}, /*dim=*/0);
             }
         }
+        }
 // savePly(result_dir_ / (std::to_string(getIteration()) + "_" + std::to_string(pkf->fid_) + "_1_after_inactive_geo_densify"));
     }
     break;
@@ -2413,15 +2719,17 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
 
     if (depth_cached_ >= max_depth_cached_) {
         depth_cached_ = 0;
-        // Add new points to the model
-        std::unique_lock<std::mutex> lock_render(mutex_render_);
-        if (geo_aware_config_.enabled && depth_cache_rotations_.defined() &&
-            depth_cache_rotations_.size(0) == depth_cache_points_.size(0)) {
-            gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_,
-                                   depth_cache_rotations_, depth_cache_scale_mods_,
-                                   depth_cache_opacities_, getIteration());
-        } else {
-            gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_, getIteration());
+        // Add new points to the model — only if cache has data
+        if (depth_cache_points_.defined() && depth_cache_points_.size(0) > 0) {
+            std::unique_lock<std::mutex> lock_render(mutex_render_);
+            if (geo_aware_config_.enabled && depth_cache_rotations_.defined() &&
+                depth_cache_rotations_.size(0) == depth_cache_points_.size(0)) {
+                gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_,
+                                       depth_cache_rotations_, depth_cache_scale_mods_,
+                                       depth_cache_opacities_, getIteration());
+            } else {
+                gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_, getIteration());
+            }
         }
     }
 

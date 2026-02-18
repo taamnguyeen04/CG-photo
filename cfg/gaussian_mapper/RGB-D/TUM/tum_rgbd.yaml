@@ -20,6 +20,7 @@ Stereo.min_disparity: 8
 Stereo.num_disparity: 128
 RGBD.min_depth: 0.0000000001
 RGBD.max_depth: 40.0
+RGBD.depth_save_scale: 5000.0  # TUM uses 5000, Replica uses 6553.5
 
 Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
 Mapper.depth_cache: 10
@@ -52,7 +53,7 @@ Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
 #--------------------------------------------------------------------------------------------
 
 # Learning rate
-Optimization.max_num_iterations: 30100
+Optimization.max_num_iterations: 30500
 Optimization.position_lr_init: 0.00032 #0.00016
 Optimization.position_lr_final: 0.00032
 Optimization.position_lr_delay_mult: 0.01
@@ -74,12 +75,116 @@ Optimization.densify_until_iter: 30000
 Optimization.densify_grad_threshold: 0.001
 
 # Loss Weights (Depth-Photo-SLAM)
-Optimization.lambda_geo: 0.5       # L_geo: Sensor depth L1 loss
-Optimization.lambda_smooth: 0.01   # L_smooth: Edge-aware smoothness
+Optimization.lambda_geo: 0.0       # L_geo: Sensor depth L1 loss
+Optimization.lambda_smooth: 0.0    # L_smooth: Edge-aware smoothness
 Optimization.lambda_var: 0.0       # L_var: Depth variance (uncertainty)
 Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
 Optimization.lambda_align: 0.0     # L_align: Depth alpha-median alignment
-Optimization.lambda_reg: 0.1       # L_reg: Planar regularization (MonoGS++)
+Optimization.lambda_reg: 0.0       # L_reg: Planar regularization (MonoGS++)
+Optimization.lambda_g1: 0.0        # L_g1: First-order gradient loss (2D-3DGS)
+Optimization.lambda_g2: 0.0        # L_g2: Second-order gradient loss (2D-3DGS)
+Optimization.gradient_log_interval: 0  # Debug: gradient conflict log every N iters (0=off, 100=recommended)
+
+#--------------------------------------------------------------------------------------------
+# CG-SLAM Uncertainty Pruning
+#--------------------------------------------------------------------------------------------
+
+Uncertainty.enable: 0              # Enable uncertainty-based pruning
+Uncertainty.tau: 0.025             # Paper threshold τ for high-uncertainty Gaussians
+Uncertainty.prune_interval: 100    # Reduce opacity every N iterations
+Uncertainty.ema_alpha: 0.1         # EMA smoothing factor
+
+#--------------------------------------------------------------------------------------------
+# Wavelet Pyramid (optional - replaces Gaussian pyramid for better edge preservation)
+#--------------------------------------------------------------------------------------------
+
+WaveletPyramid.enabled: 1              # 0=Disabled, 1=Enable adaptive densification
+WaveletPyramid.edge_method: "sobel"    # "sobel" (faster) or "wavelet" (multi-scale)
+WaveletPyramid.type: "haar"            # Wavelet type: haar, db2, db4 (only for wavelet method)
+WaveletPyramid.use_high_freq_loss: 1   # Add high-frequency edge loss (LH, HL, HH subbands)
+WaveletPyramid.high_freq_weight: 0.2   # Weight for high-freq loss (0.05-0.2 recommended)
+
+#--------------------------------------------------------------------------------------------
+# Wavelet-guided Initialization (adds extra Gaussians at edge regions)
+#--------------------------------------------------------------------------------------------
+
+WaveletInit.enabled: 0                 # Enable wavelet-guided Gaussian initialization
+WaveletInit.edge_threshold: 0.05        # Min edge strength to add extra Gaussians (0.0-1.0)
+WaveletInit.max_extra_points: 5000     # Max extra points per keyframe
+
+#--------------------------------------------------------------------------------------------
+# Fisher Information-based Uncertainty (for principled pruning/densification)
+#--------------------------------------------------------------------------------------------
+
+Fisher.enabled: 0                      # 0=disabled, 1=enabled
+Fisher.prune_threshold: 0.01           # Prune if Fisher score < threshold
+Fisher.update_interval: 50             # Compute score every N iterations
+Fisher.prune_interval: 500             # Apply pruning every N iterations
+Fisher.ema_alpha: 0.9                  # EMA smoothing for score accumulation
+Fisher.min_observations: 10            # Min observations before pruning eligible
+Fisher.weight_position: 1.0            # Weight for position gradient
+Fisher.weight_scale: 0.5               # Weight for scale gradient
+Fisher.weight_rotation: 0.3            # Weight for rotation gradient
+Fisher.weight_opacity: 0.2             # Weight for opacity gradient
+
+#--------------------------------------------------------------------------------------------
+# Guided Filter Dense Initialization (uses sensor depth + RGB for semi-dense init)
+#--------------------------------------------------------------------------------------------
+
+GuidedDepth.enabled: 0                     # 0=disabled, 1=enabled
+GuidedDepth.max_points_per_keyframe: 1500  # Match baseline ORB density (~1.5K) but better placed
+GuidedDepth.edge_sample_ratio: 0.9         # Ratio of budget for edge pixels (vs uniform)
+GuidedDepth.edge_threshold: 0.1            # Normalized edge strength threshold [0,1]
+GuidedDepth.depth_gradient_threshold: 0.5  # Max depth gradient (m/pixel)
+GuidedDepth.grid_cell_size: 8              # Grid cell size for uniform subsampling
+GuidedDepth.min_valid_depth_ratio: 0.01    # Min valid depth ratio to proceed
+
+# Depth Back-Projection Initialization (stride-based sampling from sensor depth)
+#--------------------------------------------------------------------------------------------
+
+DepthBackproject.enabled: 1          # 0=disabled, 1=enabled (overrides GuidedDepth when on)
+DepthBackproject.mode: 1             # 0=uniform stride, 1=adaptive stride (edge-aware)
+DepthBackproject.stride: 24          # Uniform mode: fixed stride
+DepthBackproject.stride_min: 2       # Adaptive mode: dense stride for edge regions
+DepthBackproject.stride_max: 8       # Adaptive mode: sparse stride for flat regions
+DepthBackproject.block_size: 16      # Adaptive mode: block size for edge computation
+DepthBackproject.edge_threshold: 0.08 # Adaptive mode: edge strength threshold [0,1]
+DepthBackproject.edge_ratio: 0.8      # Budget split: 0.8 = 80% edge, 20% flat
+DepthBackproject.max_points_per_keyframe: 1500  # Budget cap per keyframe (0=unlimited)
+DepthBackproject.min_depth: 0.001    # Min valid depth (meters)
+DepthBackproject.max_depth: 5.0      # Max valid depth (TUM sensor reliable up to ~5m)
+
+# Geometry-Aware Gaussian Initialization
+#--------------------------------------------------------------------------------------------
+
+GeoAwareInit.enabled: 0                    # 0=disabled, 1=enabled
+GeoAwareInit.flatten_ratio: 0.3            # sz/sx ratio (0.1=very flat, 1.0=sphere)
+GeoAwareInit.opacity_min: 0.05             # Opacity at smooth regions
+GeoAwareInit.opacity_max: 0.3              # Opacity at edge/textured regions
+GeoAwareInit.edge_opacity_threshold: 0.1   # Normalized edge strength for max opacity
+GeoAwareInit.normal_confidence_threshold: 0.3  # Max relative depth gradient for confident normal
+# Error-Guided Densification (SIG-Densify)
+#--------------------------------------------------------------------------------------------
+# Filters candidate Gaussians using rendering error frequency analysis + marginal info gain.
+# Only adds Gaussians where high-frequency error exists (missing detail), rejects points in
+# regions with only low-frequency error (geometry wrong → fix via gradient, not new points).
+
+EGD.enabled: 0                         # 0=disabled, 1=enabled
+EGD.blur_kernel: 5                     # GaussianBlur kernel for E_low extraction
+EGD.e_high_threshold: 0.5             # Multiplier on median E_high (0.5 = keep above-median)
+EGD.e_low_reject_ratio: 5.0           # Reject if |E_low|/|E_high| > ratio (higher=more lenient)
+EGD.mig_threshold: 0.0001             # Min Marginal Information Gain to accept
+EGD.default_candidate_opacity: 0.1    # Default opacity for MIG calculation
+EGD.redundancy_grid_cell: 4           # Grid cell size (pixels) for redundancy check
+EGD.max_per_cell: 2                   # Max candidates accepted per grid cell
+EGD.budget_per_keyframe: 1500         # Max total candidates accepted per keyframe
+EGD.high_confidence_mig: 0.05         # MIG threshold for high-confidence init
+EGD.mid_confidence_mig: 0.01          # MIG threshold for mid-confidence init
+EGD.opacity_high: 0.3                 # Init opacity for high-confidence points
+EGD.opacity_mid: 0.15                 # Init opacity for mid-confidence points
+EGD.opacity_low: 0.05                 # Init opacity for low-confidence points
+EGD.scale_penalty_mid: 0.7            # Scale multiplier for mid-confidence
+EGD.scale_penalty_low: 0.5            # Scale multiplier for low-confidence
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

@@ -53,6 +53,8 @@
 #include "fisher_information.h"
 #include "guided_depth_filter.h"
 #include "geometry_aware_init.h"
+#include "error_guided_densify.h"
+#include "depth_backproject_init.h"
 
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                                       \
     if (!dir.empty() && !std::filesystem::exists(dir))                                      \
@@ -169,6 +171,16 @@ public:
     void setSensorType(SystemSensorType sensor_type) { this->sensor_type_ = sensor_type; }
 
     void loadPly(std::filesystem::path ply_path, std::filesystem::path camera_path = "");
+
+    // GT Pose injection support
+    // frame_index → Tcw (world-to-camera SE3f in GT coordinate frame)
+    void setGTPoses(const std::vector<Sophus::SE3f>& gt_poses);
+    bool hasGTPoses() const { return !gt_frame_poses_.empty(); }
+    // Look up GT pose for an ORB-SLAM3 KeyFrame by its mnId
+    // Returns the aligned GT pose (in ORB-SLAM3 frame) if found, otherwise fallback
+    Sophus::SE3f getGTPoseForKF(unsigned long kf_id, const Sophus::SE3f& fallback);
+    // Compute alignment transform from the first keyframe
+    void computeGTAlignment(const Sophus::SE3f& orb_Tcw, unsigned long frame_id);
 
 protected:
     bool hasMetInitialMappingConditions();
@@ -323,12 +335,19 @@ protected:
     fisher_info::FisherConfig fisher_config_;       // Fisher Information configuration
     guided_depth::GuidedDepthConfig guided_depth_config_;  // Guided filter dense depth config
     geo_aware::GeoAwareConfig geo_aware_config_;            // Geometry-aware init config
+    error_guided::EGDConfig egd_config_;                    // Error-guided densification config
+    depth_backproject::DepthBackprojectConfig depth_backproject_config_;  // Depth back-projection init config
 
     // CG-SLAM Uncertainty pruning configuration (from YAML)
     bool uncertainty_enabled_ = false;
     float uncertainty_tau_ = 0.025f;
     int uncertainty_prune_interval_ = 100;
     float uncertainty_ema_alpha_ = 0.1f;
+
+    // GT Pose injection data
+    std::vector<Sophus::SE3f> gt_frame_poses_;  // frame_index → GT Tcw (in GT world frame)
+    Sophus::SE3f gt_alignment_S_inv_;            // Transform: GT world → ORB-SLAM3 world
+    bool gt_alignment_computed_ = false;         // Whether alignment has been computed
 
     std::filesystem::path result_dir_;
     int keyframe_record_interval_;

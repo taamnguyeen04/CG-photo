@@ -75,7 +75,7 @@ Optimization.densify_until_iter: 1800
 Optimization.densify_grad_threshold: 0.0001
 
 # Loss Weights (Depth-Photo-SLAM)
-Optimization.lambda_geo: 0.0       # L_geo: Sensor depth L1 loss
+Optimization.lambda_geo: 0.7       # L_geo: Sensor depth L1 loss
 Optimization.lambda_smooth: 0   # L_smooth: Edge-aware smoothness
 Optimization.lambda_var: 0.0      # L_var: CG-SLAM depth variance (paper ω₆ = 0.15)
 Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
@@ -138,6 +138,21 @@ GuidedDepth.edge_threshold: 0.1            # Normalized edge strength threshold 
 GuidedDepth.depth_gradient_threshold: 0.5  # Max depth gradient (m/pixel)
 GuidedDepth.grid_cell_size: 8              # Grid cell size for uniform subsampling
 GuidedDepth.min_valid_depth_ratio: 0.01    # Min valid depth ratio to proceed
+
+# Depth Back-Projection Initialization (stride-based sampling from GT depth)
+#--------------------------------------------------------------------------------------------
+
+DepthBackproject.enabled: 1          # 0=disabled, 1=enabled (overrides GuidedDepth when on)
+DepthBackproject.mode: 1             # 0=uniform stride, 1=adaptive stride (edge-aware)
+DepthBackproject.stride: 24          # Uniform mode: fixed stride
+DepthBackproject.stride_min: 2       # Adaptive mode: dense stride for edge regions
+DepthBackproject.stride_max: 8       # Adaptive mode: sparse stride for flat regions
+DepthBackproject.block_size: 16      # Adaptive mode: block size for edge computation
+DepthBackproject.edge_threshold: 0.08 # Adaptive mode: edge strength threshold [0,1]
+DepthBackproject.edge_ratio: 0.8      # Budget split: 0.7 = 70% edge, 30% flat
+DepthBackproject.max_points_per_keyframe: 1500  # Budget cap per keyframe (0=unlimited)
+DepthBackproject.min_depth: 0.001    # Min valid depth (meters)
+DepthBackproject.max_depth: 10.0     # Max valid depth (meters)
 
 # Geometry-Aware Gaussian Initialization
 #--------------------------------------------------------------------------------------------
