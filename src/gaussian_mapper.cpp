@@ -608,6 +608,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         settings_file["Optimization.densify_until_iter"].operator int();
     opt_params_.densify_grad_threshold_ =
         settings_file["Optimization.densify_grad_threshold"].operator float();
+    if (!settings_file["Optimization.tail_buffer"].empty())
+        opt_params_.tail_buffer_ = settings_file["Optimization.tail_buffer"].operator int();
 
     prune_big_point_after_iter_ =
         settings_file["Optimization.prune_big_point_after_iter"].operator int();
@@ -869,19 +871,17 @@ void GaussianMapper::run()
     }
 
     // Third loop: Tail gaussian optimization
-    // Guarantee we run AT LEAST until densify_until_iter + buffer,
-    // so that densification always completes even if SLAM shut down early
-    // (e.g. when TSDF / heavy CPU modules slow down the mapping loop).
+    // Add a small bounded buffer after SLAM stops to finish any pending
+    // densification cycle — but NEVER run thousands of extra iterations.
+    // This preserves real-time behavior: mapping finishes shortly after tracking.
     int densify_interval = densifyInterval();
     int n_delay_iters = densify_interval * 0.8;
-    int min_tail_iters = std::max(
-        opt_params_.densify_until_iter_ + 2 * densify_interval,
-        SLAM_stop_iter + n_delay_iters
-    );
+    int max_tail_buffer = opt_params_.tail_buffer_;
+    int min_tail_iters = SLAM_stop_iter + max_tail_buffer;
     if (getIteration() < min_tail_iters) {
         std::cout << "[Tail Opt] SLAM stopped at iter=" << SLAM_stop_iter
-                  << ", but densify_until=" << opt_params_.densify_until_iter_
-                  << ". Continuing to iter=" << min_tail_iters << " ..." << std::endl;
+                  << ". Continuing for " << max_tail_buffer
+                  << " more iters (until " << min_tail_iters << ") ..." << std::endl;
     }
     while (getIteration() < min_tail_iters
            || getIteration() - SLAM_stop_iter <= n_delay_iters

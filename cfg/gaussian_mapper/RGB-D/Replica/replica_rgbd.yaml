@@ -73,6 +73,7 @@ Optimization.densify_min_opacity: 0.02 #0.005
 Optimization.densify_from_iter: 600
 Optimization.densify_until_iter: 1800
 Optimization.densify_grad_threshold: 0.0001
+Optimization.tail_buffer: 0         # Max extra iterations after SLAM shutdown (real-time safe)
 
 # Loss Weights (Depth-Photo-SLAM)
 Optimization.lambda_geo: 0.7       # L_geo: Sensor depth L1 loss
@@ -228,7 +229,7 @@ MIG.post_densify_window: 3000    # Phase 2: insertion window after densify_until
 # Physics-based strain-energy densification replaces heuristic split/clone.
 #--------------------------------------------------------------------------------------------
 
-TSDF.enabled: 1                    # 0=disabled, 1=enabled
+TSDF.enabled: 0                    # 0=disabled, 1=enabled
 TSDF.voxel_size: 0.02              # Voxel resolution in meters (2cm)
 TSDF.truncation: 0.06              # TSDF truncation distance (3× voxel_size)
 TSDF.max_radius: 3.0               # Local volume radius around camera (meters)

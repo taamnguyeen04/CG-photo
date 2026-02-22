@@ -109,4 +109,7 @@ public:
     bool jmvo_enabled_ = false;      // Enable multi-view joint rendering per iteration
     int jmvo_num_views_ = 2;         // Number of covisible views to render (including current)
     float lambda_esc_ = 0.0f;        // Weight for Epipolar Scale Consistency Loss
+
+    // Tail optimization: max extra iterations after SLAM shutdown
+    int tail_buffer_ = 500;           // Real-time safe: only train this many iters after SLAM stops
 };
