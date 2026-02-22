@@ -107,8 +107,8 @@ public:
 
     torch::Tensor markVisibleGaussians(torch::Tensor& positions);
 
-    // CG-SLAM: Updated to return 6 tensors (color, radii, depth, depth_sq, median_depth, uncertainty)
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> forward(
+    // ESC: Updated to return 9 tensors (color, radii, depth, depth_sq, median_depth, uncertainty, T_map, cov2D, view_depths)
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> forward(
         torch::Tensor means3D,
         torch::Tensor means2D,
         torch::Tensor opacities,

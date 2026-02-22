@@ -1,3 +1,6 @@
-pa6 lambda geo = 0.2
-pa7 lambda geo = 0.5, lambda smooth = 1
-pa8 lambda geo = 0.5
+python compare_results.py \
+  --b results/replica/rgbd/DepthBackproject/all_results.csv \
+  --a results/replica/rgbd/base/all_results_base.csv \
+  --name-a baseline \
+  --name-b new \
+  --out-dir /media/tam/DATA/3D/CG-photo

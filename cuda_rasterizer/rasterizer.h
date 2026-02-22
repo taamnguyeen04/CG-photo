@@ -58,7 +58,9 @@ namespace CudaRasterizer
 			// CG-SLAM: L_var support
 			const float* gt_depth = nullptr,
 			float* out_uncertainty = nullptr,
-			int* radii = nullptr);
+			int* radii = nullptr,
+			// MIG: transmittance map output
+			float* out_T = nullptr);
 
 		// Original backward (color only)
 		static void backward(
@@ -81,6 +83,7 @@ namespace CudaRasterizer
 			char* binning_buffer,
 			char* image_buffer,
 			const float* dL_dpix,
+			const float* dL_dcov2Ds, // ESC: gradient w.r.t. 2D covariance
 			float* dL_dmean2D,
 			float* dL_dconic,
 			float* dL_dopacity,
@@ -115,6 +118,7 @@ namespace CudaRasterizer
 			const float* dL_dpix,        // Gradient from color loss [C, H, W]
 			const float* dL_ddepth,      // Gradient from depth loss [H, W]
 			const float* dL_ddepth_sq,   // Gradient from depth^2 loss [H, W]
+			const float* dL_dcov2Ds, // ESC: gradient w.r.t. 2D covariance
 			float* dL_dmean2D,
 			float* dL_dconic,
 			float* dL_dopacity,

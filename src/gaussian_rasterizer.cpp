@@ -86,6 +86,11 @@ GaussianRasterizerFunction::forward(
     auto out_median_depth = std::get<8>(rasterization_result);
     // CG-SLAM: Extract uncertainty output for L_var
     auto out_uncertainty = std::get<9>(rasterization_result);
+    // MIG: Extract transmittance map
+    auto out_T = std::get<10>(rasterization_result);
+    // ESC: Extract per-Gaussian cov2D and view-space depths
+    auto out_cov2D = std::get<11>(rasterization_result);
+    auto out_view_depths = std::get<12>(rasterization_result);
     // Note: depth tensors are currently not saved for backward pass
     // They can be used directly in the training loop for computing loss
 
@@ -109,9 +114,8 @@ GaussianRasterizerFunction::forward(
                             geomBuffer,
                             binningBuffer,
                             imgBuffer});
-    // CG-SLAM: Return 6 tensors including uncertainty output
-    // Note: backward pass doesn't compute gradients for depth/uncertainty (not needed for loss - computed separately)
-    return {color, radii, out_depth, out_depth_sq, out_median_depth, out_uncertainty};
+    // ESC: Return 9 tensors including per-Gaussian cov2D and view_depths
+    return {color, radii, out_depth, out_depth_sq, out_median_depth, out_uncertainty, out_T, out_cov2D, out_view_depths};
 }
 
 torch::autograd::tensor_list
@@ -233,8 +237,8 @@ GaussianRasterizerFunction::backward(
         torch::Tensor()
     };
 }
-// CG-SLAM: Updated to return 6 tensors including uncertainty output
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+// ESC: Updated to return 9 tensors (color, radii, depth, depth_sq, median_depth, uncertainty, T_map, cov2D, view_depths)
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 GaussianRasterizer::forward(
     torch::Tensor means3D,
     torch::Tensor means2D,
@@ -284,8 +288,9 @@ GaussianRasterizer::forward(
         cov3D_precomp,
         raster_settings
     );
-    // CG-SLAM: Return 6 tensors (color, radii, depth, depth_sq, median_depth, uncertainty)
+    // ESC: Return 9 tensors (color, radii, depth, depth_sq, median_depth, uncertainty, T_map, cov2D, view_depths)
     return std::make_tuple(result[0]/*color*/, result[1]/*radii*/,
                            result[2]/*depth*/, result[3]/*depth_sq*/, result[4]/*median_depth*/,
-                           result[5]/*uncertainty*/);
+                           result[5]/*uncertainty*/, result[6]/*T_map*/,
+                           result[7]/*cov2D*/, result[8]/*view_depths*/);
 }

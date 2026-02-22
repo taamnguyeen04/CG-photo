@@ -41,6 +41,7 @@ namespace FORWARD
 		float2* points_xy_image,
 		float* depths,
 		float* cov3Ds,
+		float* cov2Ds, // ESC: store cov2D explicitly
 		float* colors,
 		float4* conic_opacity,
 		const dim3 grid,

@@ -29,10 +29,11 @@
 class GaussianRenderer
 {
 public:
-    // CG-SLAM: Updated to return 8 tensors including uncertainty
-    // Returns: (render, viewspace_points, visibility_filter, radii, depth, depth_sq, median_depth, uncertainty)
+    // MIG/ESC: Updated to return 11 tensors including T_map, Depth, and Cov2D for JMVO
+    // Returns: (render, viewspace_points, visibility_filter, radii, depth, depth_sq, median_depth, uncertainty, T_map, view_depths, view_cov2D)
     static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-                      torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> render(
+                      torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, 
+                      torch::Tensor, torch::Tensor, torch::Tensor> render(
         std::shared_ptr<GaussianKeyframe> viewpoint_camera,
         int image_height,
         int image_width,

@@ -228,7 +228,7 @@ mkdir -p "$RESULTS_DIR"
 
 # CSV header — photometric only + gaussians + fps
 if [ ! -f "$SUMMARY_ALL" ] || [ ! -s "$SUMMARY_ALL" ]; then
-    echo "scene,run,psnr,ssim,lpips,ate_rmse,gaussians,fps" > "$SUMMARY_ALL"
+    echo "scene,run,psnr,ssim,lpips,ate_rmse,gaussians,fps_track,fps_render" > "$SUMMARY_ALL"
 fi
 echo "# Failed runs log - $(date)" >> "$FAILED_LOG"
 
@@ -403,18 +403,12 @@ run_single_scene() {
         GAUSSIANS=$(cat "${RESULT_DIR}/gaussian_count.txt" | tr -d '[:space:]')
     fi
     
-    # --- Calculate FPS from render_time.txt ---
-    FPS="N/A"
-    SHUTDOWN_DIR=$(ls -d ${RESULT_DIR}/*_shutdown 2>/dev/null | head -1)
-    if [ -n "$SHUTDOWN_DIR" ]; then
-        RENDER_TIME_FILE="${SHUTDOWN_DIR}/render_time.txt"
-        if [ -f "$RENDER_TIME_FILE" ]; then
-            # render_time.txt: each line has "kf_id time_ms", skip header (lines starting with ##)
-            AVG_MS=$(grep -v '^##' "$RENDER_TIME_FILE" | awk '{sum+=$2; count++} END {if(count>0) printf "%.4f", sum/count; else print "0"}')
-            if [ "$AVG_MS" != "0" ] && [ -n "$AVG_MS" ]; then
-                FPS=$(echo "$AVG_MS" | awk '{printf "%.2f", 1000.0/$1}')
-            fi
-        fi
+    # --- Extract Tracking/Rendering FPS from eval.txt ---
+    FPS_TRACK="N/A"
+    FPS_RENDER="N/A"
+    if [ -f "${RESULT_DIR}/eval.txt" ]; then
+        FPS_TRACK=$(grep "tracking FPS:" "${RESULT_DIR}/eval.txt" | awk '{printf "%.2f", $3}' || echo "N/A")
+        FPS_RENDER=$(grep "rendering FPS:" "${RESULT_DIR}/eval.txt" | awk '{printf "%.2f", $3}' || echo "N/A")
     fi
     
     # --- Print summary ---
@@ -422,10 +416,10 @@ run_single_scene() {
     echo "--- ${SCENE} Run ${RUN} Results ---"
     echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS}"
     echo "ATE RMSE: ${ATE_RMSE}m"
-    echo "Gaussians: ${GAUSSIANS} | FPS: ${FPS}"
+    echo "Gaussians: ${GAUSSIANS} | Track FPS: ${FPS_TRACK} | Render FPS: ${FPS_RENDER}"
     
     # Append to CSV
-    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${GAUSSIANS},${FPS}" >> "$SUMMARY_ALL"
+    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${GAUSSIANS},${FPS_TRACK},${FPS_RENDER}" >> "$SUMMARY_ALL"
     
     # Save individual summary
     cat > "${RESULT_DIR}/summary.txt" << EOF
@@ -450,7 +444,8 @@ ATE_RMSE: ${ATE_RMSE}
 
 # Model
 Gaussians: ${GAUSSIANS}
-FPS: ${FPS}
+Track_FPS: ${FPS_TRACK}
+Render_FPS: ${FPS_RENDER}
 EOF
 }
 

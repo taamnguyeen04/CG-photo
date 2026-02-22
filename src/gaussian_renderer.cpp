@@ -20,8 +20,10 @@
  * 
  * @return std::tuple<render, viewspace_points, visibility_filter, radii, depth, depth_sq, median_depth, uncertainty>
  */
+// MIG/ESC: Updated to return 11 tensors including T_map, depth_per_point, cov2D
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, 
+           torch::Tensor, torch::Tensor, torch::Tensor>
 GaussianRenderer::render(
     std::shared_ptr<GaussianKeyframe> viewpoint_camera,
     int image_height,
@@ -143,11 +145,16 @@ GaussianRenderer::render(
     auto median_depth = std::get<4>(rasterizer_result);
     // CG-SLAM: Extract uncertainty output
     auto uncertainty = std::get<5>(rasterizer_result);
-
+    // MIG: Extract transmittance map
+    auto T_map = std::get<6>(rasterizer_result);
+    // ESC: Extract per-Gaussian cov2D and view-space depths (from CUDA rasterizer)
+    auto view_cov2D = std::get<7>(rasterizer_result);    // [P, 3]
+    auto view_depths = std::get<8>(rasterizer_result);   // [P]
     /* Those Gaussians that were frustum culled or had a radius of 0 were not visible.
        They will be excluded from value updates used in the splitting criteria.
      */
-    // CG-SLAM: Return 8 tensors including uncertainty output
+     
+    // MIG/ESC: Return 11 tensors
     return std::make_tuple(
         rendered_image,     /*render*/
         screenspace_points, /*viewspace_points*/
@@ -156,6 +163,9 @@ GaussianRenderer::render(
         depth,              /*depth*/
         depth_sq,           /*depth_sq*/
         median_depth,       /*median_depth*/
-        uncertainty         /*uncertainty - CG-SLAM*/
+        uncertainty,        /*uncertainty - CG-SLAM*/
+        T_map,              /*T_map - MIG*/
+        view_depths,        /*view_depths - ESC*/
+        view_cov2D          /*view_cov2D - ESC*/
     );
 }

@@ -18,6 +18,8 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include <cub/cub.cuh>
+#include <thrust/fill.h>
+#include <thrust/execution_policy.h>
 #include <cub/device/device_radix_sort.cuh>
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
@@ -163,6 +165,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.conic_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
+	obtain(chunk, geom.cov2D, P * 3, 128); // ESC: allocate cov2D buffer (xx, xy, yy)
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
 	obtain(chunk, geom.point_offsets, P, 128);
@@ -230,7 +233,9 @@ int CudaRasterizer::Rasterizer::forward(
 	// CG-SLAM: L_var support
 	const float* gt_depth,
 	float* out_uncertainty,
-	int* radii)
+	int* radii,
+	// MIG: transmittance map output
+	float* out_T)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -278,6 +283,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.means2D,
 		geomState.depths,
 		geomState.cov3D,
+		geomState.cov2D, // ESC: store cov2D explicitly
 		geomState.rgb,
 		geomState.conic_opacity,
 		tile_grid,
@@ -333,6 +339,10 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
+	// MIG: Initialize accum_alpha (transmittance) to 1.0f — T starts at 1 (fully transparent)
+	// This ensures out_T is valid even when P==0 (no Gaussians → T=1 everywhere)
+	thrust::fill_n(thrust::device, imgState.accum_alpha, width * height, 1.0f);
+
 	// Depth-Photo-SLAM: Pass depth buffers to render
 	// CG-SLAM: Pass gt_depth and uncertainty buffers for L_var
 	FORWARD::render(
@@ -369,6 +379,10 @@ int CudaRasterizer::Rasterizer::forward(
 	if (out_uncertainty != nullptr) {
 		cudaMemcpy(out_uncertainty, imgState.out_uncertainty, img_size, cudaMemcpyDeviceToDevice);
 	}
+	// MIG: Copy final transmittance map (accum_alpha = T after all Gaussians)
+	if (out_T != nullptr) {
+		cudaMemcpy(out_T, imgState.accum_alpha, img_size, cudaMemcpyDeviceToDevice);
+	}
 
 	return num_rendered;
 }
@@ -395,6 +409,7 @@ void CudaRasterizer::Rasterizer::backward(
 	char* binning_buffer,
 	char* img_buffer,
 	const float* dL_dpix,
+	const float* dL_dcov2Ds, // ESC
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dopacity,
@@ -462,6 +477,7 @@ void CudaRasterizer::Rasterizer::backward(
 		(glm::vec3*)campos,
 		(float3*)dL_dmean2D,
 		dL_dconic,
+		dL_dcov2Ds, // ESC
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
@@ -492,6 +508,7 @@ void CudaRasterizer::Rasterizer::backwardWithDepth(
 	const float* dL_dpix,
 	const float* dL_ddepth,
 	const float* dL_ddepth_sq,
+	const float* dL_dcov2Ds, // ESC
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dopacity,
@@ -563,6 +580,7 @@ void CudaRasterizer::Rasterizer::backwardWithDepth(
 		(glm::vec3*)campos,
 		(float3*)dL_dmean2D,
 		dL_dconic,
+		dL_dcov2Ds, // ESC
 		dL_ddepths,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,

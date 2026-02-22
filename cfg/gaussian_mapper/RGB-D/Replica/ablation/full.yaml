@@ -33,7 +33,7 @@ Mapper.large_rotation_threshold: 20.0
 Mapper.large_translation_threshold: 0.5
 Mapper.stable_num_iter_existence: 1
 
-GausPyramid.do: 0  # 0:false, 1 or other integer:true
+GausPyramid.do: 1  # 0:false, 1 or other integer:true
 GausPyramid.num_sub_levels: 2
 GausPyramid.sub_level_times_of_use: 8
 
@@ -191,12 +191,12 @@ Optimization.jmvo_enabled: 0          # 0=disabled, 1=enabled (Joint Training ov
 Optimization.lambda_esc: 0.0           # Weight for ESC Loss (disabled to test JMVO alone first)
 
 # Cone-based Scale Initialization (replaces k-NN distCUDA2)
-ConeScale.enabled: 0                  # 0=disabled, 1=enabled
+ConeScale.enabled: 1                  # 0=disabled, 1=enabled
 ConeScale.scale_multiplier: 2.0       # Global scale multiplier
 ConeScale.min_scale: -7.0             # Min log-scale (≈0.001 in world units)
 ConeScale.max_scale: 0.0              # Max log-scale (≈1.0 in world units)
 
-ConeDensify.enabled: 0                 # 0=disabled, 1=enabled
+ConeDensify.enabled: 1                 # 0=disabled, 1=enabled
 ConeDensify.budget_per_iter: 500       # Max new Gaussians per densification step
 ConeDensify.min_error_threshold: 0.01    # Min L1 error to consider a pixel (0-1)
 ConeDensify.densify_interval: 5      # Insert new Gaussians every N iterations
@@ -205,7 +205,7 @@ ConeDensify.prune_opacity_threshold: 0.005  # Prune if sigmoid(opacity) < thresh
 
 # EFD: Error Frequency Decomposition — Gradient Boosting for Densification
 # Decomposes |rendered-gt| via Haar wavelet → boosts Clone/Split in high-error regions
-EFD.enabled: 0                   # 0=disabled, 1=enabled
+EFD.enabled: 1                   # 0=disabled, 1=enabled
 EFD.low_freq_weight: 1.0         # Weight for LL subband (geometry/structure error)
 EFD.high_freq_weight: 2.0        # Weight for LH+HL+HH subbands (detail error)
 EFD.boost_strength: 3.0          # Max gradient multiplier (1.0=no boost, 3.0=3x boost)
@@ -214,30 +214,13 @@ EFD.min_error_threshold: 0.01    # Ignore pixels with error < threshold (noise f
 # MIG: Marginal Information Gain — two-phase transmittance-guided densification
 # Phase 1: T-weighted L1 loss → optimizer focuses on under-covered pixels
 # Phase 2: Insert new Gaussians at remaining gaps (after densification)
-MIG.enabled: 0
+MIG.enabled: 1
 MIG.min_T_threshold: 0.5         # Phase 2: min transmittance for insertion
 MIG.min_error_threshold: 0.05    # Phase 2: min error for insertion
 MIG.budget_per_iter: 500          # Phase 2: max new Gaussians per step
 MIG.densify_interval: 500        # Phase 2: insertion frequency
 MIG.lambda_T: 0.2               # Phase 1: T-weighted loss (only after densification)
 MIG.post_densify_window: 3000    # Phase 2: insertion window after densify_until_iter
-
-#--------------------------------------------------------------------------------------------
-# Molding-GS: TSDF-Anchored Gaussian Splatting
-# Local Hash-TSDF constrains Gaussians to lie on true surfaces, eliminating floaters.
-# Physics-based strain-energy densification replaces heuristic split/clone.
-#--------------------------------------------------------------------------------------------
-
-TSDF.enabled: 1                    # 0=disabled, 1=enabled
-TSDF.voxel_size: 0.02              # Voxel resolution in meters (2cm)
-TSDF.truncation: 0.06              # TSDF truncation distance (3× voxel_size)
-TSDF.max_radius: 3.0               # Local volume radius around camera (meters)
-TSDF.min_weight: 3.0               # Min observation weight to trust SDF
-TSDF.lambda_sdf: 0.1              # Weight for SDF anchor loss
-TSDF.lambda_normal: 0.001           # Weight for normal alignment loss
-TSDF.strain_threshold: 100       # Disabled Strain Split (was 0.01)
-TSDF.prune_sdf_threshold: 100    # Disabled SDF Pruning (was 0.15)
-TSDF.prune_interval: 500           # SDF-based pruning every N iterations
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

@@ -104,4 +104,9 @@ public:
     float lambda_g1_ = 0.0f;         // L_g1: First-order gradient loss (2D-3DGS)
     float lambda_g2_ = 0.0f;         // L_g2: Second-order gradient loss (2D-3DGS)
     int gradient_log_interval_ = 0;  // Debug: gradient conflict analysis interval (0=disabled)
+
+    // Joint Multi-View Optimization (JMVO) & Epipolar Scale Consistency (ESC)
+    bool jmvo_enabled_ = false;      // Enable multi-view joint rendering per iteration
+    int jmvo_num_views_ = 2;         // Number of covisible views to render (including current)
+    float lambda_esc_ = 0.0f;        // Weight for Epipolar Scale Consistency Loss
 };

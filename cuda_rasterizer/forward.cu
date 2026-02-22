@@ -173,6 +173,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float2* points_xy_image,
 	float* depths,
 	float* cov3Ds,
+	float* cov2Ds, // ESC: store cov2D explicitly
 	float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
@@ -214,6 +215,13 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Compute 2D screen-space covariance matrix
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+
+	// ESC: explicitly store the computed 2D covariance
+	if (cov2Ds != nullptr) {
+		cov2Ds[idx * 3 + 0] = cov.x;
+		cov2Ds[idx * 3 + 1] = cov.y;
+		cov2Ds[idx * 3 + 2] = cov.z;
+	}
 
 	// Invert covariance (EWA algorithm)
 	float det = (cov.x * cov.z - cov.y * cov.y);
@@ -486,6 +494,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float2* means2D,
 	float* depths,
 	float* cov3Ds,
+	float* cov2Ds, // ESC: store cov2D explicitly
 	float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
@@ -513,6 +522,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		means2D,
 		depths,
 		cov3Ds,
+		cov2Ds, // ESC: store cov2D explicitly
 		rgb,
 		conic_opacity,
 		grid,

@@ -80,6 +80,7 @@ namespace BACKWARD
 		const glm::vec3* campos,
 		const float3* dL_dmean2D,
 		const float* dL_dconics,
+		const float* dL_dcov2Ds, // ESC
 		glm::vec3* dL_dmeans,
 		float* dL_dcolor,
 		float* dL_dcov3D,
@@ -106,6 +107,7 @@ namespace BACKWARD
 		const glm::vec3* campos,
 		const float3* dL_dmean2D,
 		const float* dL_dconics,
+		const float* dL_dcov2Ds, // ESC
 		const float* dL_ddepths,       // Gradient w.r.t. per-Gaussian depth
 		glm::vec3* dL_dmeans,
 		float* dL_dcolor,

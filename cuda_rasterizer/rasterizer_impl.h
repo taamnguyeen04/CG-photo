@@ -39,6 +39,9 @@ namespace CudaRasterizer
 		float* rgb;
 		uint32_t* point_offsets;
 		uint32_t* tiles_touched;
+		
+		// ESC: store 2D covariance
+		float* cov2D;
 
 		static GeometryState fromChunk(char*& chunk, size_t P);
 	};

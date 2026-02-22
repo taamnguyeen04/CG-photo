@@ -23,9 +23,32 @@ SCENES=("$@")
 
 if [ ${#SCENES[@]} -eq 0 ]; then
     echo "Error: No scenes specified!"
-    echo "Usage: ./run_full_pipeline.sh <mode> <pa_name> <num_runs> <scene1> [scene2] ..."
+    echo "Usage: ./run_full_pipeline.sh <mode> <pa_name> <num_runs> <scene1|full> [scene2] ..."
+    echo "       Use 'full' to run all 8 Replica rooms"
     exit 1
 fi
+
+# Expand 'full' keyword to all 8 Replica rooms
+ALL_REPLICA_SCENES=(office0 office1 office2 office3 office4 room0 room1 room2)
+EXPANDED_SCENES=()
+for s in "${SCENES[@]}"; do
+    if [ "$s" = "full" ]; then
+        EXPANDED_SCENES+=("${ALL_REPLICA_SCENES[@]}")
+    else
+        EXPANDED_SCENES+=("$s")
+    fi
+done
+# Deduplicate while preserving order
+declare -A _seen
+SCENES=()
+for s in "${EXPANDED_SCENES[@]}"; do
+    if [ -z "${_seen[$s]}" ]; then
+        _seen[$s]=1
+        SCENES+=("$s")
+    fi
+done
+unset _seen EXPANDED_SCENES
+
 
 # Validate mode
 MODE=$(echo "$MODE" | tr '[:upper:]' '[:lower:]')
@@ -112,9 +135,8 @@ SUMMARY_ALL="${RESULTS_DIR}/all_results.csv"
 FAILED_LOG="${RESULTS_DIR}/failed_runs.txt"
 mkdir -p "${RESULTS_DIR}"
 
-# Only write header if CSV doesn't exist or is empty
 if [ ! -f "$SUMMARY_ALL" ] || [ ! -s "$SUMMARY_ALL" ]; then
-    echo "scene,run,psnr,ssim,lpips,ate_rmse,accuracy,completion,comp_ratio,chamfer,gaussians" > "$SUMMARY_ALL"
+    echo "scene,run,psnr,ssim,lpips,ate_rmse,accuracy,completion,comp_ratio,chamfer,gaussians,fps_track,fps_render" > "$SUMMARY_ALL"
 fi
 echo "# Failed runs log - $(date)" >> "$FAILED_LOG"
 
@@ -228,15 +250,23 @@ run_single_scene() {
         GAUSSIANS=$(cat "${RESULT_DIR}/gaussian_count.txt" | tr -d '[:space:]')
     fi
     
+    # Extract Tracking/Rendering FPS from eval.txt
+    FPS_TRACK="N/A"
+    FPS_RENDER="N/A"
+    if [ -f "${RESULT_DIR}/eval.txt" ]; then
+        FPS_TRACK=$(grep "tracking FPS:" "${RESULT_DIR}/eval.txt" | awk '{printf "%.2f", $3}' || echo "N/A")
+        FPS_RENDER=$(grep "rendering FPS:" "${RESULT_DIR}/eval.txt" | awk '{printf "%.2f", $3}' || echo "N/A")
+    fi
+    
     # Print summary for this run
     echo ""
     echo "--- ${SCENE} Run ${RUN} Results ---"
     echo "PSNR: ${PSNR} | SSIM: ${SSIM} | LPIPS: ${LPIPS} | ATE: ${ATE_RMSE}m"
     echo "Acc: ${ACC}cm | Comp: ${COMP}cm | Chamfer: ${CHAMFER}cm | Ratio: ${COMP_RATIO}%"
-    echo "Gaussians: ${GAUSSIANS}"
+    echo "Gaussians: ${GAUSSIANS} | Track FPS: ${FPS_TRACK} | Render FPS: ${FPS_RENDER}"
     
     # Append to CSV
-    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${ACC},${COMP},${COMP_RATIO},${CHAMFER},${GAUSSIANS}" >> "$SUMMARY_ALL"
+    echo "${SCENE},${RUN},${PSNR},${SSIM},${LPIPS},${ATE_RMSE},${ACC},${COMP},${COMP_RATIO},${CHAMFER},${GAUSSIANS},${FPS_TRACK},${FPS_RENDER}" >> "$SUMMARY_ALL"
     
     # Save individual summary
     cat > "${RESULT_DIR}/summary.txt" << EOF
@@ -259,6 +289,9 @@ Accuracy: ${ACC}
 Completion: ${COMP}
 Completion_Ratio: ${COMP_RATIO}
 Chamfer: ${CHAMFER}
+Gaussians: ${GAUSSIANS}
+Track_FPS: ${FPS_TRACK}
+Render_FPS: ${FPS_RENDER}
 EOF
 }
 

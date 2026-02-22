@@ -67,20 +67,20 @@ Optimization.rotation_lr: 0.001 #0.001
 Optimization.percent_dense: 0.01
 Optimization.lambda_dssim: 0.2
 Optimization.densification_interval: 100
-Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
+Optimization.opacity_reset_interval: 3000  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: 30000
 Optimization.densify_min_opacity: 0.1 #0.005
 Optimization.densify_from_iter: 1000
 Optimization.densify_until_iter: 30000
-Optimization.densify_grad_threshold: 0.001
+Optimization.densify_grad_threshold: 0.0005
 
 # Loss Weights (Depth-Photo-SLAM)
-Optimization.lambda_geo: 0.0       # L_geo: Sensor depth L1 loss
-Optimization.lambda_smooth: 0.0    # L_smooth: Edge-aware smoothness
+Optimization.lambda_geo: 0.7       # L_geo: Sensor depth L1 loss (Quan trọng với RGB-D để neo Gaussians)
+Optimization.lambda_smooth: 0.0    # L_smooth: Edge-aware smoothness (Giảm nhiễu hạt, làm mượt bề mặt)
 Optimization.lambda_var: 0.0       # L_var: Depth variance (uncertainty)
 Optimization.lambda_iso: 0.0       # L_iso: Gaussian isotropy (anti-needle)
 Optimization.lambda_align: 0.0     # L_align: Depth alpha-median alignment
-Optimization.lambda_reg: 0.0       # L_reg: Planar regularization (MonoGS++)
+Optimization.lambda_reg: 0.0       # L_reg: Planar regularization (Ép Gaussians dẹp xuống bề mặt, giảm noise lơ lửng)
 Optimization.lambda_g1: 0.0        # L_g1: First-order gradient loss (2D-3DGS)
 Optimization.lambda_g2: 0.0        # L_g2: Second-order gradient loss (2D-3DGS)
 Optimization.gradient_log_interval: 0  # Debug: gradient conflict log every N iters (0=off, 100=recommended)
@@ -98,10 +98,10 @@ Uncertainty.ema_alpha: 0.1         # EMA smoothing factor
 # Wavelet Pyramid (optional - replaces Gaussian pyramid for better edge preservation)
 #--------------------------------------------------------------------------------------------
 
-WaveletPyramid.enabled: 1              # 0=Disabled, 1=Enable adaptive densification
+WaveletPyramid.enabled: 0              # 0=Disabled, 1=Enable adaptive densification
 WaveletPyramid.edge_method: "sobel"    # "sobel" (faster) or "wavelet" (multi-scale)
 WaveletPyramid.type: "haar"            # Wavelet type: haar, db2, db4 (only for wavelet method)
-WaveletPyramid.use_high_freq_loss: 1   # Add high-frequency edge loss (LH, HL, HH subbands)
+WaveletPyramid.use_high_freq_loss: 0   # Add high-frequency edge loss (LH, HL, HH subbands)
 WaveletPyramid.high_freq_weight: 0.2   # Weight for high-freq loss (0.05-0.2 recommended)
 
 #--------------------------------------------------------------------------------------------
@@ -142,7 +142,7 @@ GuidedDepth.min_valid_depth_ratio: 0.01    # Min valid depth ratio to proceed
 # Depth Back-Projection Initialization (stride-based sampling from sensor depth)
 #--------------------------------------------------------------------------------------------
 
-DepthBackproject.enabled: 1          # 0=disabled, 1=enabled (overrides GuidedDepth when on)
+DepthBackproject.enabled: 0          # 0=disabled, 1=enabled (overrides GuidedDepth when on)
 DepthBackproject.mode: 1             # 0=uniform stride, 1=adaptive stride (edge-aware)
 DepthBackproject.stride: 24          # Uniform mode: fixed stride
 DepthBackproject.stride_min: 2       # Adaptive mode: dense stride for edge regions
@@ -150,9 +150,14 @@ DepthBackproject.stride_max: 8       # Adaptive mode: sparse stride for flat reg
 DepthBackproject.block_size: 16      # Adaptive mode: block size for edge computation
 DepthBackproject.edge_threshold: 0.08 # Adaptive mode: edge strength threshold [0,1]
 DepthBackproject.edge_ratio: 0.8      # Budget split: 0.8 = 80% edge, 20% flat
-DepthBackproject.max_points_per_keyframe: 1500  # Budget cap per keyframe (0=unlimited)
+DepthBackproject.max_points_per_keyframe: 800   # Budget cap per keyframe (reduced for ConeGS-only)
 DepthBackproject.min_depth: 0.001    # Min valid depth (meters)
 DepthBackproject.max_depth: 5.0      # Max valid depth (TUM sensor reliable up to ~5m)
+DepthBackproject.guided_filter: 1     # 0=off, 1=Guided Filter pre-smoothing (He 2010)
+DepthBackproject.guided_filter_radius: 4  # Window radius (window = 2r+1 = 9x9)
+DepthBackproject.guided_filter_eps: 0.5   # Epsilon (higher for TUM real sensor noise)
+DepthBackproject.depth_grad_filter: 1     # 0=off, 1=reject flying pixels by depth gradient
+DepthBackproject.depth_grad_threshold: 2.0 # Max depth gradient (m/pixel) — TUM noisy, needs >0.5
 
 # Geometry-Aware Gaussian Initialization
 #--------------------------------------------------------------------------------------------
@@ -163,28 +168,64 @@ GeoAwareInit.opacity_min: 0.05             # Opacity at smooth regions
 GeoAwareInit.opacity_max: 0.3              # Opacity at edge/textured regions
 GeoAwareInit.edge_opacity_threshold: 0.1   # Normalized edge strength for max opacity
 GeoAwareInit.normal_confidence_threshold: 0.3  # Max relative depth gradient for confident normal
-# Error-Guided Densification (SIG-Densify)
+# ConeGS: Cone-based Gaussian Splatting (replaces Clone/Split + k-NN + Opacity Reset)
 #--------------------------------------------------------------------------------------------
-# Filters candidate Gaussians using rendering error frequency analysis + marginal info gain.
-# Only adds Gaussians where high-frequency error exists (missing detail), rejects points in
-# regions with only low-frequency error (geometry wrong → fix via gradient, not new points).
 
-EGD.enabled: 0                         # 0=disabled, 1=enabled
-EGD.blur_kernel: 5                     # GaussianBlur kernel for E_low extraction
-EGD.e_high_threshold: 0.5             # Multiplier on median E_high (0.5 = keep above-median)
-EGD.e_low_reject_ratio: 5.0           # Reject if |E_low|/|E_high| > ratio (higher=more lenient)
-EGD.mig_threshold: 0.0001             # Min Marginal Information Gain to accept
-EGD.default_candidate_opacity: 0.1    # Default opacity for MIG calculation
-EGD.redundancy_grid_cell: 4           # Grid cell size (pixels) for redundancy check
-EGD.max_per_cell: 2                   # Max candidates accepted per grid cell
-EGD.budget_per_keyframe: 1500         # Max total candidates accepted per keyframe
-EGD.high_confidence_mig: 0.05         # MIG threshold for high-confidence init
-EGD.mid_confidence_mig: 0.01          # MIG threshold for mid-confidence init
-EGD.opacity_high: 0.3                 # Init opacity for high-confidence points
-EGD.opacity_mid: 0.15                 # Init opacity for mid-confidence points
-EGD.opacity_low: 0.05                 # Init opacity for low-confidence points
-EGD.scale_penalty_mid: 0.7            # Scale multiplier for mid-confidence
-EGD.scale_penalty_low: 0.5            # Scale multiplier for low-confidence
+# 3DGS Gradient-based Clone/Split densification
+Densification.gradient_based: 1       # 0=disabled, 1=enabled (standard 3DGS Clone/Split)
+
+# Opacity Penalty (replaces Opacity Reset — continuous loss instead of abrupt reset)
+Optimization.lambda_opacity_penalty: 0.0  # 0=off (use standard opacity reset instead)
+
+# Cone-based Scale Initialization (replaces k-NN distCUDA2)
+ConeScale.enabled: 0                  # 0=disabled, 1=enabled
+ConeScale.scale_multiplier: 1.0       # Global scale multiplier
+ConeScale.min_scale: -7.0             # Min log-scale (≈0.001 in world units)
+ConeScale.max_scale: 0.0              # Max log-scale (≈1.0 in world units)
+
+# Error-Guided Densification (replaces gradient-based Clone/Split)
+ConeDensify.enabled: 0                 # 0=disabled, 1=enabled
+ConeDensify.budget_per_iter: 100       # Max new Gaussians per densification step
+ConeDensify.min_error_threshold: 0.05  # Min L1 error to consider a pixel (0-1)
+ConeDensify.densify_interval: 100      # Insert new Gaussians every N iterations
+ConeDensify.prune_interval: 100        # Prune low-opacity Gaussians every N iterations
+ConeDensify.prune_opacity_threshold: 0.01  # Prune if sigmoid(opacity) < threshold
+
+# EFD: Error Frequency Decomposition — gradient weighting for densification
+#--------------------------------------------------------------------------------------------
+
+EFD.enabled: 0                   # 0=disabled, 1=enabled  
+EFD.low_freq_weight: 1.0         # Weight for LL subband (geometry/structure error)
+EFD.high_freq_weight: 2.0        # Weight for LH+HL+HH subbands (detail error)
+EFD.boost_strength: 1.2          # Max gradient multiplier (1.0=no boost, reduced for hybrid to avoid over-split)
+EFD.min_error_threshold: 0.02    # Ignore pixels with error < threshold (noise filter)
+
+# MIG: Marginal Information Gain — two-phase transmittance-guided densification
+# Phase 1: T-weighted L1 loss → optimizer focuses on under-covered pixels (after densification)
+# Phase 2: Insert new Gaussians at remaining gaps (after densification)
+MIG.enabled: 0
+MIG.min_T_threshold: 0.5         # Phase 2: min transmittance for insertion
+MIG.min_error_threshold: 0.3    # Phase 2: min error for insertion
+MIG.budget_per_iter: 100          # Phase 2: max new Gaussians per step
+MIG.densify_interval: 500        # Phase 2: insertion frequency
+MIG.lambda_T: 0.1               # Phase 1: T-weighted loss (only after densification)
+MIG.post_densify_window: 3000    # Phase 2: insertion window after densify_until_iter
+
+#--------------------------------------------------------------------------------------------
+# Molding-GS: TSDF-Anchored 3D Gaussian Splatting
+# Tuned for TUM (real Kinect sensor — noisier than Replica synthetic)
+#--------------------------------------------------------------------------------------------
+
+TSDF.enabled: 0                     # 0=disabled, 1=enabled
+TSDF.voxel_size: 0.03               # Voxel resolution (3cm — larger for noisy TUM depth)
+TSDF.truncation: 0.09               # TSDF truncation = 3× voxel_size
+TSDF.max_radius: 3.0                # Local volume radius around camera (meters)
+TSDF.min_weight: 5.0                # Min observation weight (higher for noisy sensor)
+TSDF.lambda_sdf: 0.1                # Weight for SDF anchor loss
+TSDF.lambda_normal: 0.05            # Weight for normal alignment loss
+TSDF.strain_threshold: 100          # Disabled Strain Split (set 0.05 to enable)
+TSDF.prune_sdf_threshold: 100       # Disabled SDF Pruning (set 0.05 to enable)
+TSDF.prune_interval: 500            # SDF-based pruning every N iterations
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

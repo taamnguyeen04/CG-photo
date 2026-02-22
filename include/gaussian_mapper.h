@@ -27,6 +27,7 @@
 #include <ctime>
 #include <sstream>
 #include <thread>
+#include <future>
 #include <filesystem>
 #include <map>
 #include <random>
@@ -53,8 +54,9 @@
 #include "fisher_information.h"
 #include "guided_depth_filter.h"
 #include "geometry_aware_init.h"
-#include "error_guided_densify.h"
+#include "error_guided_densify.h"  // ConeGS module (renamed, contains conegs namespace)
 #include "depth_backproject_init.h"
+#include "local_tsdf.h"
 
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                                       \
     if (!dir.empty() && !std::filesystem::exists(dir))                                      \
@@ -335,8 +337,30 @@ protected:
     fisher_info::FisherConfig fisher_config_;       // Fisher Information configuration
     guided_depth::GuidedDepthConfig guided_depth_config_;  // Guided filter dense depth config
     geo_aware::GeoAwareConfig geo_aware_config_;            // Geometry-aware init config
-    error_guided::EGDConfig egd_config_;                    // Error-guided densification config
+    conegs::ConeScaleConfig cone_scale_config_;             // ConeGS: cone-based scale init
+    conegs::ConeDensifyConfig cone_densify_config_;         // ConeGS: error-guided insertion
+    bool gradient_densify_enabled_ = true;                   // 3DGS gradient-based Clone/Split
+    float lambda_opacity_penalty_ = 0.0f;                   // ConeGS: pre-activation opacity penalty
+    wavelet::EFDConfig efd_config_;                         // EFD: error frequency decomposition
     depth_backproject::DepthBackprojectConfig depth_backproject_config_;  // Depth back-projection init config
+
+    // MIG: Marginal Information Gain — two-phase transmittance-guided densification
+    // Phase 1: T-weighted L1 loss → boost loss at under-covered pixels
+    // Phase 2: Insert new Gaussians at remaining gaps (after densification)
+    struct MIGConfig {
+        bool enabled = false;
+        float min_T_threshold = 0.5f;       // Phase 2: min transmittance for insertion
+        float min_error_threshold = 0.05f;  // Phase 2: min error for insertion
+        int budget_per_iter = 50;           // Phase 2: max new Gaussians per step
+        int densify_interval = 500;         // Phase 2: insertion frequency
+        float lambda_T = 0.5f;             // Phase 1: T-weighted loss strength
+        int post_densify_window = 3000;     // Phase 2: insertion window after densify_until_iter
+    } mig_config_;
+
+    // Molding-GS: TSDF-Anchored Gaussian Splatting
+    local_tsdf::TSDFConfig tsdf_config_;
+    std::unique_ptr<local_tsdf::LocalTSDF> local_tsdf_;
+    std::future<void> tsdf_fusion_future_;  // Async TSDF fusion handle
 
     // CG-SLAM Uncertainty pruning configuration (from YAML)
     bool uncertainty_enabled_ = false;

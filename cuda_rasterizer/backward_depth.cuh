@@ -221,13 +221,13 @@ void BACKWARD::preprocessWithDepth(
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos, const float3* dL_dmean2D,
-	const float* dL_dconics, const float* dL_ddepths,
+	const float* dL_dconics, const float* dL_dcov2Ds, const float* dL_ddepths, // ESC
 	glm::vec3* dL_dmeans, float* dL_dcolor, float* dL_dcov3D,
 	float* dL_dsh, glm::vec3* dL_dscale, glm::vec4* dL_drot)
 {
 	computeCov2DCUDA<<<(P + 255) / 256, 256>>>(
 		P, means, radii, cov3Ds, focal_x, focal_y, tan_fovx, tan_fovy,
-		viewmatrix, dL_dconics, (float3*)dL_dmeans, dL_dcov3D);
+		viewmatrix, dL_dconics, dL_dcov2Ds, (float3*)dL_dmeans, dL_dcov3D);
 
 	preprocessCUDAWithDepth<NUM_CHANNELS><<<(P + 255) / 256, 256>>>(
 		P, D, M, (float3*)means, radii, shs, clamped,

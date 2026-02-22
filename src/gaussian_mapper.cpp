@@ -352,6 +352,36 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         wavelet_config_.init_enabled = false;
     }
 
+    // EFD: Error Frequency Decomposition for gradient boosting
+    if (settings_file["EFD.enabled"].operator int()) {
+        efd_config_.enabled = true;
+        efd_config_.low_freq_weight  = settings_file["EFD.low_freq_weight"].operator float();
+        efd_config_.high_freq_weight = settings_file["EFD.high_freq_weight"].operator float();
+        efd_config_.boost_strength   = settings_file["EFD.boost_strength"].operator float();
+        efd_config_.min_error_threshold = settings_file["EFD.min_error_threshold"].operator float();
+        std::cout << "[Gaussian Mapper] EFD ENABLED (low=" << efd_config_.low_freq_weight
+                  << ", high=" << efd_config_.high_freq_weight
+                  << ", boost=" << efd_config_.boost_strength << ")" << std::endl;
+    } else {
+        efd_config_.enabled = false;
+    }
+
+    // MIG: Marginal Information Gain — two-phase transmittance-guided densification
+    if (settings_file["MIG.enabled"].operator int()) {
+        mig_config_.enabled = true;
+        mig_config_.min_T_threshold     = settings_file["MIG.min_T_threshold"].operator float();
+        mig_config_.min_error_threshold = settings_file["MIG.min_error_threshold"].operator float();
+        mig_config_.budget_per_iter     = settings_file["MIG.budget_per_iter"].operator int();
+        mig_config_.densify_interval    = settings_file["MIG.densify_interval"].operator int();
+        mig_config_.lambda_T            = settings_file["MIG.lambda_T"].operator float();
+        mig_config_.post_densify_window = settings_file["MIG.post_densify_window"].operator int();
+        std::cout << "[Gaussian Mapper] MIG ENABLED (Phase1: lambda_T=" << mig_config_.lambda_T
+                  << ", Phase2: budget=" << mig_config_.budget_per_iter
+                  << ", window=" << mig_config_.post_densify_window << ")" << std::endl;
+    } else {
+        mig_config_.enabled = false;
+    }
+
     // Fisher Information-based Uncertainty Configuration
     if (settings_file["Fisher.enabled"].operator int()) {
         fisher_config_.enabled = true;
@@ -421,46 +451,51 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         geo_aware_config_.enabled = false;
     }
 
-    // Error-Guided Densification (SIG-Densify)
-    if (!settings_file["EGD.enabled"].empty() && settings_file["EGD.enabled"].operator int()) {
-        egd_config_.enabled = true;
-        if (!settings_file["EGD.blur_kernel"].empty())
-            egd_config_.blur_kernel = settings_file["EGD.blur_kernel"].operator int();
-        if (!settings_file["EGD.e_high_threshold"].empty())
-            egd_config_.e_high_threshold = settings_file["EGD.e_high_threshold"].operator float();
-        if (!settings_file["EGD.e_low_reject_ratio"].empty())
-            egd_config_.e_low_reject_ratio = settings_file["EGD.e_low_reject_ratio"].operator float();
-        if (!settings_file["EGD.mig_threshold"].empty())
-            egd_config_.mig_threshold = settings_file["EGD.mig_threshold"].operator float();
-        if (!settings_file["EGD.default_candidate_opacity"].empty())
-            egd_config_.default_candidate_opacity = settings_file["EGD.default_candidate_opacity"].operator float();
-        if (!settings_file["EGD.redundancy_grid_cell"].empty())
-            egd_config_.redundancy_grid_cell = settings_file["EGD.redundancy_grid_cell"].operator int();
-        if (!settings_file["EGD.max_per_cell"].empty())
-            egd_config_.max_per_cell = settings_file["EGD.max_per_cell"].operator int();
-        if (!settings_file["EGD.budget_per_keyframe"].empty())
-            egd_config_.budget_per_keyframe = settings_file["EGD.budget_per_keyframe"].operator int();
-        if (!settings_file["EGD.high_confidence_mig"].empty())
-            egd_config_.high_confidence_mig = settings_file["EGD.high_confidence_mig"].operator float();
-        if (!settings_file["EGD.mid_confidence_mig"].empty())
-            egd_config_.mid_confidence_mig = settings_file["EGD.mid_confidence_mig"].operator float();
-        if (!settings_file["EGD.opacity_high"].empty())
-            egd_config_.opacity_high = settings_file["EGD.opacity_high"].operator float();
-        if (!settings_file["EGD.opacity_mid"].empty())
-            egd_config_.opacity_mid = settings_file["EGD.opacity_mid"].operator float();
-        if (!settings_file["EGD.opacity_low"].empty())
-            egd_config_.opacity_low = settings_file["EGD.opacity_low"].operator float();
-        if (!settings_file["EGD.scale_penalty_mid"].empty())
-            egd_config_.scale_penalty_mid = settings_file["EGD.scale_penalty_mid"].operator float();
-        if (!settings_file["EGD.scale_penalty_low"].empty())
-            egd_config_.scale_penalty_low = settings_file["EGD.scale_penalty_low"].operator float();
-        std::cout << "[Gaussian Mapper] Error-Guided Densification ENABLED (blur_k="
-                  << egd_config_.blur_kernel
-                  << ", e_high_th=" << egd_config_.e_high_threshold
-                  << ", mig_th=" << egd_config_.mig_threshold
-                  << ", budget=" << egd_config_.budget_per_keyframe << ")" << std::endl;
-    } else {
-        egd_config_.enabled = false;
+    // ConeGS: Cone-based Scale Init (replaces k-NN scaling)
+    if (!settings_file["ConeScale.enabled"].empty() && settings_file["ConeScale.enabled"].operator int()) {
+        cone_scale_config_.enabled = true;
+        if (!settings_file["ConeScale.scale_multiplier"].empty())
+            cone_scale_config_.scale_multiplier = settings_file["ConeScale.scale_multiplier"].operator float();
+        if (!settings_file["ConeScale.min_scale"].empty())
+            cone_scale_config_.min_scale = settings_file["ConeScale.min_scale"].operator float();
+        if (!settings_file["ConeScale.max_scale"].empty())
+            cone_scale_config_.max_scale = settings_file["ConeScale.max_scale"].operator float();
+        std::cout << "[ConeGS] Cone Scale ENABLED (mult=" << cone_scale_config_.scale_multiplier
+                  << ", min=" << cone_scale_config_.min_scale
+                  << ", max=" << cone_scale_config_.max_scale << ")" << std::endl;
+    }
+
+    // ConeGS: Error-Guided Insertion (replaces Clone/Split)
+    if (!settings_file["ConeDensify.enabled"].empty() && settings_file["ConeDensify.enabled"].operator int()) {
+        cone_densify_config_.enabled = true;
+        if (!settings_file["ConeDensify.budget_per_iter"].empty())
+            cone_densify_config_.budget_per_iter = settings_file["ConeDensify.budget_per_iter"].operator int();
+        if (!settings_file["ConeDensify.densify_interval"].empty())
+            cone_densify_config_.densify_interval = settings_file["ConeDensify.densify_interval"].operator int();
+        if (!settings_file["ConeDensify.prune_interval"].empty())
+            cone_densify_config_.prune_interval = settings_file["ConeDensify.prune_interval"].operator int();
+        if (!settings_file["ConeDensify.prune_opacity_threshold"].empty())
+            cone_densify_config_.prune_opacity_threshold = settings_file["ConeDensify.prune_opacity_threshold"].operator float();
+        if (!settings_file["ConeDensify.min_error_threshold"].empty())
+            cone_densify_config_.min_error_threshold = settings_file["ConeDensify.min_error_threshold"].operator float();
+        if (!settings_file["ConeDensify.flatten_ratio"].empty())
+            cone_densify_config_.flatten_ratio = settings_file["ConeDensify.flatten_ratio"].operator float();
+        std::cout << "[ConeGS] Error-Guided Insertion ENABLED (budget=" << cone_densify_config_.budget_per_iter
+                  << ", interval=" << cone_densify_config_.densify_interval
+                  << ", flatten=" << cone_densify_config_.flatten_ratio
+                  << ", prune_th=" << cone_densify_config_.prune_opacity_threshold << ")" << std::endl;
+    }
+
+    // Gradient-based Clone/Split toggle
+    if (!settings_file["Densification.gradient_based"].empty())
+        gradient_densify_enabled_ = settings_file["Densification.gradient_based"].operator int();
+    std::cout << "[Densification] Gradient-based Clone/Split: " << (gradient_densify_enabled_ ? "ENABLED" : "DISABLED") << std::endl;
+
+    // ConeGS: Pre-activation Opacity Penalty (replaces Opacity Reset)
+    if (!settings_file["Optimization.lambda_opacity_penalty"].empty())
+        lambda_opacity_penalty_ = settings_file["Optimization.lambda_opacity_penalty"].operator float();
+    if (lambda_opacity_penalty_ > 0.0f) {
+        std::cout << "[ConeGS] Opacity Penalty ENABLED (lambda=" << lambda_opacity_penalty_ << ")" << std::endl;
     }
 
     // Depth Back-Projection Initialization (stride-based)
@@ -486,6 +521,18 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
             depth_backproject_config_.min_depth = settings_file["DepthBackproject.min_depth"].operator float();
         if (!settings_file["DepthBackproject.max_depth"].empty())
             depth_backproject_config_.max_depth = settings_file["DepthBackproject.max_depth"].operator float();
+        // Guided Filter
+        if (!settings_file["DepthBackproject.guided_filter"].empty())
+            depth_backproject_config_.guided_filter_enabled = settings_file["DepthBackproject.guided_filter"].operator int();
+        if (!settings_file["DepthBackproject.guided_filter_radius"].empty())
+            depth_backproject_config_.guided_filter_radius = settings_file["DepthBackproject.guided_filter_radius"].operator int();
+        if (!settings_file["DepthBackproject.guided_filter_eps"].empty())
+            depth_backproject_config_.guided_filter_eps = settings_file["DepthBackproject.guided_filter_eps"].operator float();
+        // Depth gradient filter
+        if (!settings_file["DepthBackproject.depth_grad_filter"].empty())
+            depth_backproject_config_.depth_grad_filter = settings_file["DepthBackproject.depth_grad_filter"].operator int();
+        if (!settings_file["DepthBackproject.depth_grad_threshold"].empty())
+            depth_backproject_config_.depth_grad_threshold = settings_file["DepthBackproject.depth_grad_threshold"].operator float();
         if (depth_backproject_config_.mode == 1) {
             std::cout << "[Gaussian Mapper] Depth Back-Projection ENABLED (ADAPTIVE"
                       << ", stride=[" << depth_backproject_config_.stride_min
@@ -495,7 +542,13 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
                       << ", ratio=" << depth_backproject_config_.edge_ratio
                       << ", budget=" << depth_backproject_config_.max_points_per_keyframe
                       << ", depth=[" << depth_backproject_config_.min_depth
-                      << "," << depth_backproject_config_.max_depth << "])" << std::endl;
+                      << "," << depth_backproject_config_.max_depth << "]";
+            if (depth_backproject_config_.guided_filter_enabled)
+                std::cout << ", GuidedFilter(r=" << depth_backproject_config_.guided_filter_radius
+                          << ",eps=" << depth_backproject_config_.guided_filter_eps << ")";
+            if (depth_backproject_config_.depth_grad_filter)
+                std::cout << ", DepthGradFilter(th=" << depth_backproject_config_.depth_grad_threshold << ")";
+            std::cout << ")" << std::endl;
         } else {
             std::cout << "[Gaussian Mapper] Depth Back-Projection ENABLED (UNIFORM"
                       << ", stride=" << depth_backproject_config_.stride
@@ -574,12 +627,54 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path)
         opt_params_.lambda_align_ = settings_file["Optimization.lambda_align"].operator float();
     if (!settings_file["Optimization.lambda_reg"].empty())
         opt_params_.lambda_reg_ = settings_file["Optimization.lambda_reg"].operator float();
+
+    if (!settings_file["Optimization.jmvo_enabled"].empty())
+        opt_params_.jmvo_enabled_ = settings_file["Optimization.jmvo_enabled"].operator int() != 0;
+        
+    if (!settings_file["Optimization.lambda_esc"].empty())
+        opt_params_.lambda_esc_ = settings_file["Optimization.lambda_esc"].operator float();
     if (!settings_file["Optimization.lambda_g1"].empty())
         opt_params_.lambda_g1_ = settings_file["Optimization.lambda_g1"].operator float();
     if (!settings_file["Optimization.lambda_g2"].empty())
         opt_params_.lambda_g2_ = settings_file["Optimization.lambda_g2"].operator float();
     if (!settings_file["Optimization.gradient_log_interval"].empty())
         opt_params_.gradient_log_interval_ = settings_file["Optimization.gradient_log_interval"].operator int();
+
+    // ====================================================================
+    // Molding-GS: TSDF-Anchored Gaussian Splatting Configuration
+    // ====================================================================
+    if (!settings_file["TSDF.enabled"].empty())
+        tsdf_config_.enabled = settings_file["TSDF.enabled"].operator int() != 0;
+    if (!settings_file["TSDF.voxel_size"].empty())
+        tsdf_config_.voxel_size = settings_file["TSDF.voxel_size"].operator float();
+    if (!settings_file["TSDF.truncation"].empty())
+        tsdf_config_.truncation = settings_file["TSDF.truncation"].operator float();
+    if (!settings_file["TSDF.max_radius"].empty())
+        tsdf_config_.max_radius = settings_file["TSDF.max_radius"].operator float();
+    if (!settings_file["TSDF.min_weight"].empty())
+        tsdf_config_.min_weight = settings_file["TSDF.min_weight"].operator float();
+    if (!settings_file["TSDF.lambda_sdf"].empty())
+        tsdf_config_.lambda_sdf = settings_file["TSDF.lambda_sdf"].operator float();
+    if (!settings_file["TSDF.lambda_normal"].empty())
+        tsdf_config_.lambda_normal = settings_file["TSDF.lambda_normal"].operator float();
+    if (!settings_file["TSDF.strain_threshold"].empty())
+        tsdf_config_.strain_threshold = settings_file["TSDF.strain_threshold"].operator float();
+    if (!settings_file["TSDF.prune_sdf_threshold"].empty())
+        tsdf_config_.prune_sdf_threshold = settings_file["TSDF.prune_sdf_threshold"].operator float();
+    if (!settings_file["TSDF.prune_interval"].empty())
+        tsdf_config_.prune_interval = settings_file["TSDF.prune_interval"].operator int();
+    if (!settings_file["TSDF.fusion_interval"].empty())
+        tsdf_config_.fusion_interval = settings_file["TSDF.fusion_interval"].operator int();
+
+    if (tsdf_config_.enabled) {
+        std::cout << "[Molding-GS] TSDF-Anchored 3DGS ENABLED" << std::endl;
+        std::cout << "  voxel_size=" << tsdf_config_.voxel_size
+                  << " truncation=" << tsdf_config_.truncation
+                  << " max_radius=" << tsdf_config_.max_radius << std::endl;
+        std::cout << "  lambda_sdf=" << tsdf_config_.lambda_sdf
+                  << " lambda_normal=" << tsdf_config_.lambda_normal
+                  << " strain_th=" << tsdf_config_.strain_threshold << std::endl;
+    }
 
     // Viewer Parameters
     rendered_image_viewer_scale_ =
@@ -726,6 +821,15 @@ void GaussianMapper::run()
                 gaussians_->trainingSetup(opt_params_);
             }
 
+            // Molding-GS: Initialize Local TSDF volume
+            if (tsdf_config_.enabled) {
+                local_tsdf_ = std::make_unique<local_tsdf::LocalTSDF>(
+                    tsdf_config_.voxel_size, tsdf_config_.truncation);
+                std::cout << "[Molding-GS] LocalTSDF initialized: voxel="
+                          << tsdf_config_.voxel_size << "m, trunc="
+                          << tsdf_config_.truncation << "m" << std::endl;
+            }
+
             // Invoke training once
             trainForOneIteration();
 
@@ -765,9 +869,24 @@ void GaussianMapper::run()
     }
 
     // Third loop: Tail gaussian optimization
+    // Guarantee we run AT LEAST until densify_until_iter + buffer,
+    // so that densification always completes even if SLAM shut down early
+    // (e.g. when TSDF / heavy CPU modules slow down the mapping loop).
     int densify_interval = densifyInterval();
     int n_delay_iters = densify_interval * 0.8;
-    while (getIteration() - SLAM_stop_iter <= n_delay_iters || getIteration() % densify_interval <= n_delay_iters || isKeepingTraining()) {
+    int min_tail_iters = std::max(
+        opt_params_.densify_until_iter_ + 2 * densify_interval,
+        SLAM_stop_iter + n_delay_iters
+    );
+    if (getIteration() < min_tail_iters) {
+        std::cout << "[Tail Opt] SLAM stopped at iter=" << SLAM_stop_iter
+                  << ", but densify_until=" << opt_params_.densify_until_iter_
+                  << ". Continuing to iter=" << min_tail_iters << " ..." << std::endl;
+    }
+    while (getIteration() < min_tail_iters
+           || getIteration() - SLAM_stop_iter <= n_delay_iters
+           || getIteration() % densify_interval <= n_delay_iters
+           || isKeepingTraining()) {
         trainForOneIteration();
         densify_interval = densifyInterval();
         n_delay_iters = densify_interval * 0.8;
@@ -997,12 +1116,38 @@ void GaussianMapper::trainForOneIteration()
     auto median_depth = std::get<6>(render_pkg);
     // CG-SLAM: Extract uncertainty output for L_var
     auto uncertainty = std::get<7>(render_pkg);
+    // MIG: Extract transmittance map T[H, W]
+    auto T_map = std::get<8>(render_pkg);
+    // ESC: Extract per-Gaussian cov2D and view-space depths
+    auto primary_cov2D = std::get<9>(render_pkg);       // [P, 3] (xx, xy, yy)
+    auto primary_view_depths = std::get<10>(render_pkg); // [P]
 
     // Get rid of black edges caused by undistortion
     torch::Tensor masked_image = rendered_image * mask;
 
     // Loss
-    auto Ll1 = loss_utils::l1_loss(masked_image, gt_image);
+    torch::Tensor Ll1;
+    
+    // EFD Loss Weighting: frequency-aware per-pixel L1 weight
+    // Wavelet decomposes |rendered-gt| → high-freq error regions get higher loss weight
+    // Unlike gradient boosting, this works WITH Adam optimizer (not against it)
+    if (efd_config_.enabled &&
+        getIteration() >= opt_params_.densify_from_iter_ &&
+        getIteration() < opt_params_.densify_until_iter_) {
+        auto efd_weight_map = wavelet::efdComputeWeightMap(
+            masked_image.detach(), gt_image.detach(), efd_config_);  // [H, W] range [1, boost_strength]
+        auto efd_weight_3d = efd_weight_map.unsqueeze(0);  // [1, H, W] → broadcasts with [3, H, W]
+        Ll1 = ((masked_image - gt_image).abs() * efd_weight_3d).mean();
+    }
+    // MIG Phase 1: T-weighted L1 — boost loss at under-covered pixels
+    else if (mig_config_.enabled && mig_config_.lambda_T > 0.0f &&
+        getIteration() > opt_params_.densify_until_iter_) {
+        auto T_weight = (1.0f + mig_config_.lambda_T *
+                         T_map.detach().clamp(0.0f, 1.0f)).unsqueeze(0);  // [1,H,W]
+        Ll1 = ((masked_image - gt_image).abs() * T_weight).mean();
+    } else {
+        Ll1 = loss_utils::l1_loss(masked_image, gt_image);
+    }
     float lambda_dssim = lambdaDssim();
     
     // Read loss weights from config (early to enable conditional computation)
@@ -1118,6 +1263,62 @@ void GaussianMapper::trainForOneIteration()
             wavelet_config_.high_freq_weight * 0.5f);  // HH weight (less important)
     }
     
+    // ConeGS: Pre-activation opacity penalty (replaces Opacity Reset)
+    // L_o = lambda_o × mean(o_pre) — ép Gaussian rác giảm opacity dần
+    torch::Tensor L_opacity = torch::zeros({1}, torch::TensorOptions().device(device_type_));
+    if (lambda_opacity_penalty_ > 0.0f) {
+        L_opacity = gaussians_->opacity_.mean();  // Raw pre-activation (pre-sigmoid) value
+    }
+
+    // ====================================================================
+    // Molding-GS: TSDF Anchor Loss + Normal Alignment Loss
+    // Sync: wait for background fusion to finish (non-blocking test) before
+    // querying the volume. If still running, skip this iteration's TSDF loss.
+    // ====================================================================
+    bool tsdf_ready = !tsdf_fusion_future_.valid() ||
+                      tsdf_fusion_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+    torch::Tensor L_sdf = torch::zeros(1, torch::TensorOptions().device(device_type_));
+    torch::Tensor L_normal = torch::zeros(1, torch::TensorOptions().device(device_type_));
+    
+    // TSDF Loss: only compute every N iterations to avoid blocking GPU.
+    // querySDF/queryGradient/queryWeight are CPU hash lookups over 200k+ Gaussians
+    // and 2M+ voxels — calling them every iteration freezes training for minutes.
+    const int tsdf_loss_interval = 10;  // Compute TSDF loss every 10 iters
+    if (tsdf_config_.enabled && local_tsdf_ && local_tsdf_->numVoxels() > 0 &&
+        tsdf_ready && (getIteration() % tsdf_loss_interval == 0)) {
+        auto xyz = gaussians_->getXYZ();  // [N, 3] — differentiable
+        
+        // Batch query TSDF: SDF values, gradients (normals), observation weights
+        auto sdf_vals = local_tsdf_->querySDF(xyz);       // [N] on CUDA
+        auto sdf_grads = local_tsdf_->queryGradient(xyz);  // [N, 3] on CUDA
+        auto sdf_weights = local_tsdf_->queryWeight(xyz);  // [N] on CUDA
+        
+        // L_sdf: Pull Gaussian centers to SDF=0 surface
+        L_sdf = loss_utils::sdf_anchor_loss(
+            sdf_vals, gaussians_->opacity_, sdf_weights, tsdf_config_.min_weight);
+        
+        // L_normal: Align Gaussian Z-axis to TSDF surface normal
+        L_normal = loss_utils::normal_alignment_loss(
+            gaussians_->rotation_, sdf_grads, sdf_weights, tsdf_config_.min_weight);
+        
+        // Log every 500 iterations
+        if (getIteration() % 500 == 0) {
+            auto observed = (sdf_weights > tsdf_config_.min_weight);
+            int64_t n_observed = observed.sum().item<int64_t>();
+            float mean_sdf = 0.0f;
+            if (n_observed > 0) {
+                mean_sdf = sdf_vals.abs().masked_select(observed).mean().item<float>();
+            }
+            std::cout << "[Molding-GS] iter=" << getIteration()
+                      << " | L_sdf=" << L_sdf.item<float>()
+                      << " L_normal=" << L_normal.item<float>()
+                      << " | observed=" << n_observed << "/" << xyz.size(0)
+                      << " | mean|SDF|=" << std::fixed << std::setprecision(4) << mean_sdf
+                      << " | voxels=" << local_tsdf_->numVoxels()
+                      << std::endl;
+        }
+    }
+
     // Combine losses with weights
     auto loss = (1.0 - lambda_dssim) * Ll1
                 + lambda_dssim * (1.0 - loss_utils::ssim(masked_image, gt_image, device_type_))
@@ -1129,7 +1330,62 @@ void GaussianMapper::trainForOneIteration()
                 + lambda_reg * L_reg
                 + lambda_g1 * L_g1
                 + lambda_g2 * L_g2
-                + L_wavelet;  // Added wavelet edge loss (weight included in function)
+                + L_wavelet  // Wavelet edge loss
+                + lambda_opacity_penalty_ * L_opacity  // ConeGS opacity penalty
+                + tsdf_config_.lambda_sdf * L_sdf      // Molding-GS: SDF anchor
+                + tsdf_config_.lambda_normal * L_normal; // Molding-GS: normal alignment
+
+    // ========================================================================
+    // Analytical ESC: Epipolar Scale Consistency (no secondary rendering)
+    // Computes Σ2D analytically from Gaussian params + camera poses.
+    // Fully differentiable — gradients flow to xyz, scales, rotations.
+    // ========================================================================
+    if (opt_params_.jmvo_enabled_ && opt_params_.lambda_esc_ > 0.0f && scene_->keyframes().size() > 3) {
+        // Find a neighbor keyframe via temporal interleaving
+        auto it = scene_->keyframes().find(viewpoint_cam->fid_);
+        std::shared_ptr<GaussianKeyframe> neighbor_cam = nullptr;
+
+        if (getIteration() % 2 == 0) {
+            if (it != scene_->keyframes().begin())
+                neighbor_cam = std::prev(it)->second;
+            else {
+                auto next_it = std::next(it);
+                if (next_it != scene_->keyframes().end())
+                    neighbor_cam = next_it->second;
+            }
+        } else {
+            auto next_it = std::next(it);
+            if (next_it != scene_->keyframes().end())
+                neighbor_cam = next_it->second;
+            else if (it != scene_->keyframes().begin())
+                neighbor_cam = std::prev(it)->second;
+        }
+
+        if (neighbor_cam) {
+            // Compute focal lengths from FoV
+            float fx_A = viewpoint_cam->image_width_ / (2.0f * std::tan(viewpoint_cam->FoVx_ * 0.5f));
+            float fy_A = viewpoint_cam->image_height_ / (2.0f * std::tan(viewpoint_cam->FoVy_ * 0.5f));
+            float fx_B = neighbor_cam->image_width_ / (2.0f * std::tan(neighbor_cam->FoVx_ * 0.5f));
+            float fy_B = neighbor_cam->image_height_ / (2.0f * std::tan(neighbor_cam->FoVy_ * 0.5f));
+
+            // Analytical ESC — no rendering needed, pure PyTorch matrix ops
+            auto L_esc = loss_utils::analytical_esc_loss(
+                gaussians_->getXYZ(),                    // [N, 3] positions
+                gaussians_->getScalingActivation(),      // [N, 3] activated scales
+                gaussians_->getRotationActivation(),     // [N, 4] normalized quaternions
+                viewpoint_cam->world_view_transform_,    // [4, 4] primary view matrix
+                neighbor_cam->world_view_transform_,     // [4, 4] neighbor view matrix
+                fx_A, fy_A, fx_B, fy_B,
+                radii,                                   // [N] primary visibility
+                radii                                    // [N] use primary radii as proxy (neighbor not rendered)
+            );
+
+            loss = loss + opt_params_.lambda_esc_ * L_esc;
+        }
+    }
+    // ========================================================================
+    // END Analytical ESC
+    // ========================================================================
     
     // ========================================================================
     // LOSS COMPONENT LOGGING - Log individual loss values for visualization
@@ -1307,29 +1563,28 @@ void GaussianMapper::trainForOneIteration()
 
         // Densification
         if (getIteration() < opt_params_.densify_until_iter_) {
-            // Keep track of max radii in image-space for pruning
+
+            // Standard: Keep track of max radii in image-space for pruning
+            // (EFD now operates via loss weighting, not gradient boosting)
             gaussians_->max_radii2D_.index_put_(
                 {visibility_filter},
                 torch::max(gaussians_->max_radii2D_.index({visibility_filter}),
                             radii.index({visibility_filter})));
-            // if (!isdoingGausPyramidTraining() || training_level < num_gaus_pyramid_sub_levels_)
-                gaussians_->addDensificationStats(viewspace_point_tensor, visibility_filter);
+            gaussians_->addDensificationStats(viewspace_point_tensor, visibility_filter);
 
-            if ((getIteration() > opt_params_.densify_from_iter_) &&
+            if (gradient_densify_enabled_ &&
+                (getIteration() > opt_params_.densify_from_iter_) &&
                 (getIteration() % densifyInterval()== 0)) {
                 int size_threshold = (getIteration() > prune_big_point_after_iter_) ? 20 : 0;
                 
                 // Wavelet-based Adaptive Densification
-                // Compute edge strength from ground truth image to guide densification
                 float adaptive_grad_threshold = densifyGradThreshold();
                 
                 if (wavelet_config_.enabled && has_gt_depth) {
                     float mean_edge_strength = 0.5f;
                     
                     if (wavelet_config_.use_sobel) {
-                        // Sobel-based edge detection (faster, pixel-level accuracy)
                         auto gray = gt_image.mean(0, true);
-                        
                         auto sobel_x = torch::tensor({{-1.0f, 0.0f, 1.0f},
                                                        {-2.0f, 0.0f, 2.0f},
                                                        {-1.0f, 0.0f, 1.0f}}, 
@@ -1338,16 +1593,13 @@ void GaussianMapper::trainForOneIteration()
                                                        { 0.0f,  0.0f,  0.0f},
                                                        { 1.0f,  2.0f,  1.0f}}, 
                                                       torch::TensorOptions().device(gt_image.device()));
-                        
                         sobel_x = sobel_x.unsqueeze(0).unsqueeze(0);
                         sobel_y = sobel_y.unsqueeze(0).unsqueeze(0);
                         auto gray_batch = gray.unsqueeze(0);
-                        
                         auto grad_x = torch::nn::functional::conv2d(gray_batch, sobel_x, 
                             torch::nn::functional::Conv2dFuncOptions().padding(1));
                         auto grad_y = torch::nn::functional::conv2d(gray_batch, sobel_y,
                             torch::nn::functional::Conv2dFuncOptions().padding(1));
-                        
                         auto grad_mag = torch::sqrt(grad_x * grad_x + grad_y * grad_y);
                         auto edge_max = grad_mag.max();
                         auto edge_min = grad_mag.min();
@@ -1355,48 +1607,24 @@ void GaussianMapper::trainForOneIteration()
                             grad_mag = (grad_mag - edge_min) / (edge_max - edge_min + 1e-6f);
                         }
                         mean_edge_strength = grad_mag.mean().item<float>();
-                        
-                        // Sobel thresholds (values are ~0.02-0.15)
-                        if (mean_edge_strength > 0.15f) {
-                            adaptive_grad_threshold *= 0.5f;  // Densify more
-                        } else if (mean_edge_strength < 0.05f) {
-                            adaptive_grad_threshold *= 1.5f;  // Densify less
-                        }
-                        
-                        if (getIteration() % 500 == 0) {
-                            std::cout << "[Sobel Densify] iter=" << getIteration()
-                                      << " | edge=" << std::fixed << std::setprecision(3) << mean_edge_strength
-                                      << " | thresh=" << adaptive_grad_threshold << std::endl;
-                        }
+                        if (mean_edge_strength > 0.15f) adaptive_grad_threshold *= 0.5f;
+                        else if (mean_edge_strength < 0.05f) adaptive_grad_threshold *= 1.5f;
                     } else {
-                        // Wavelet-based edge detection (multi-scale)
                         auto wavelet_decomp = wavelet::haarDecompose2D(gt_image);
                         auto edge_map = wavelet_decomp.LH.abs() + wavelet_decomp.HL.abs() + wavelet_decomp.HH.abs();
-                        
                         auto edge_max = edge_map.max();
                         auto edge_min = edge_map.min();
                         if ((edge_max - edge_min).item<float>() > 1e-6f) {
                             edge_map = (edge_map - edge_min) / (edge_max - edge_min + 1e-6f);
                         }
                         mean_edge_strength = edge_map.mean().item<float>();
-                        
-                        // Wavelet thresholds (values are ~0.3-0.6)
-                        if (mean_edge_strength > 0.6f) {
-                            adaptive_grad_threshold *= 0.5f;  // Densify more
-                        } else if (mean_edge_strength < 0.3f) {
-                            adaptive_grad_threshold *= 1.5f;  // Densify less
-                        }
-                        
-                        if (getIteration() % 500 == 0) {
-                            std::cout << "[Wavelet Densify] iter=" << getIteration()
-                                      << " | edge=" << std::fixed << std::setprecision(3) << mean_edge_strength
-                                      << " | thresh=" << adaptive_grad_threshold << std::endl;
-                        }
+                        if (mean_edge_strength > 0.6f) adaptive_grad_threshold *= 0.5f;
+                        else if (mean_edge_strength < 0.3f) adaptive_grad_threshold *= 1.5f;
                     }
                 }
                 
                 gaussians_->densifyAndPrune(
-                    adaptive_grad_threshold,  // Adaptive threshold based on wavelet edge strength
+                    adaptive_grad_threshold,
                     densify_min_opacity_,
                     scene_->cameras_extent_,
                     size_threshold
@@ -1407,8 +1635,425 @@ void GaussianMapper::trainForOneIteration()
                 && (getIteration() % opacityResetInterval() == 0
                     ||(model_params_.white_background_ && getIteration() == opt_params_.densify_from_iter_)))
                 gaussians_->resetOpacity();
+
+            // ====================================================================
+            // Molding-GS: Strain-Energy Densification (Physics-based Split)
+            // Splits Gaussians that have high strain (far from TSDF surface)
+            // using tangent-plane projection for split direction
+            // ====================================================================
+            if (tsdf_config_.enabled && local_tsdf_ && local_tsdf_->numVoxels() > 0 &&
+                gradient_densify_enabled_ &&
+                (getIteration() > opt_params_.densify_from_iter_) &&
+                (getIteration() % densifyInterval() == 0) &&
+                (!tsdf_fusion_future_.valid() || tsdf_fusion_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)) {
+                
+                torch::NoGradGuard no_grad_strain;
+                
+                auto xyz = gaussians_->getXYZ().detach();              // [N, 3]
+                auto sdf_vals = local_tsdf_->querySDF(xyz);             // [N]
+                auto sdf_grads = local_tsdf_->queryGradient(xyz);       // [N, 3]
+                auto sdf_weights = local_tsdf_->queryWeight(xyz);       // [N]
+                auto scales_act = gaussians_->getScalingActivation().detach(); // [N, 3]
+                
+                // Strain energy: E = |SDF(μ)|
+                auto strain = sdf_vals.abs();
+                auto observed = sdf_weights > tsdf_config_.min_weight;
+                auto max_scale = std::get<0>(scales_act.max(1));
+                auto large_enough = max_scale > 0.005f;  // At least 5mm
+                
+                // Split candidates: high strain + observed + large enough
+                auto split_mask = (strain > tsdf_config_.strain_threshold) & observed & large_enough;
+                int64_t n_split = split_mask.sum().item<int64_t>();
+                
+                // Limit splits to avoid explosion, but don't restrict too heavily
+                int64_t max_splits = std::max<int64_t>(500, static_cast<int64_t>(xyz.size(0) * 0.05));
+                if (n_split > max_splits) {
+                    auto split_indices_all = split_mask.nonzero().squeeze(1);
+                    auto strain_at_candidates = strain.index({split_indices_all});
+                    auto [top_strain, top_idx] = strain_at_candidates.topk(max_splits);
+                    split_mask = torch::zeros_like(split_mask);
+                    split_mask.index_put_({split_indices_all.index({top_idx})}, true);
+                    n_split = max_splits;
+                }
+                
+                if (n_split > 0) {
+                    auto split_idx = split_mask.nonzero().squeeze(1);  // [K]
+                    auto split_xyz = xyz.index({split_idx});           // [K, 3]
+                    auto split_sdf = sdf_vals.index({split_idx});      // [K]
+                    auto split_grad = sdf_grads.index({split_idx});    // [K, 3] normals
+                    auto split_scales = gaussians_->scaling_.index({split_idx}).detach(); // [K, 3] log-scale
+                    auto split_rotations = gaussians_->rotation_.index({split_idx}).detach(); // [K, 4]
+                    auto split_features_dc = gaussians_->features_dc_.index({split_idx}).detach();
+                    auto split_features_rest = gaussians_->features_rest_.index({split_idx}).detach();
+                    auto split_opacity = gaussians_->opacity_.index({split_idx}).detach();
+                    
+                    auto split_scales_act = scales_act.index({split_idx}); // [K, 3]
+                    
+                    // Find longest axis per Gaussian
+                    auto [max_s, max_dim] = split_scales_act.max(1);  // [K], [K]
+                    
+                    // Build v_long: unit vector along longest axis in world frame
+                    // For simplicity, use the column of rotation matrix corresponding to max_dim
+                    auto qw = split_rotations.index({"...", 0});
+                    auto qx = split_rotations.index({"...", 1});
+                    auto qy = split_rotations.index({"...", 2});
+                    auto qz = split_rotations.index({"...", 3});
+                    
+                    // Full rotation matrix columns
+                    auto col0 = torch::stack({
+                        1.f - 2.f*(qy*qy + qz*qz),
+                        2.f*(qx*qy + qw*qz),
+                        2.f*(qx*qz - qw*qy)}, 1);  // [K, 3]
+                    auto col1 = torch::stack({
+                        2.f*(qx*qy - qw*qz),
+                        1.f - 2.f*(qx*qx + qz*qz),
+                        2.f*(qy*qz + qw*qx)}, 1);  // [K, 3]
+                    auto col2 = torch::stack({
+                        2.f*(qx*qz + qw*qy),
+                        2.f*(qy*qz - qw*qx),
+                        1.f - 2.f*(qx*qx + qy*qy)}, 1);  // [K, 3]
+                    
+                    // Select v_long based on max_dim
+                    auto v_long = torch::where(
+                        (max_dim == 0).unsqueeze(1), col0,
+                        torch::where((max_dim == 1).unsqueeze(1), col1, col2)); // [K, 3]
+                    
+                    // Project v_long onto tangent plane: v_split = v_long - (v_long·n)n
+                    auto n = split_grad;  // [K, 3] surface normal
+                    auto dot_vn = (v_long * n).sum(1, true);  // [K, 1]
+                    auto v_split = v_long - dot_vn * n;       // [K, 3]
+                    
+                    // Handle collinear case (v_long ∥ n): use random tangent vector
+                    auto v_split_norm = v_split.norm(2, 1, true).clamp_min(1e-8f);  // [K, 1]
+                    auto is_collinear = (v_split_norm.squeeze(1) < 1e-4f);  // [K]
+                    
+                    if (is_collinear.any().item<bool>()) {
+                        // Generate random tangent vector for collinear cases
+                        auto random_vec = torch::randn({n_split, 3}, xyz.options());
+                        auto random_proj = random_vec - (random_vec * n).sum(1, true) * n;
+                        auto random_norm = random_proj.norm(2, 1, true).clamp_min(1e-8f);
+                        random_proj = random_proj / random_norm;
+                        v_split = torch::where(is_collinear.unsqueeze(1), random_proj, v_split);
+                        v_split_norm = v_split.norm(2, 1, true).clamp_min(1e-8f);
+                    }
+                    
+                    v_split = v_split / v_split_norm;  // Normalize
+                    
+                    // Displacement: quarter of the scale along the split direction (more conservative)
+                    auto displacement = 0.25f * max_s.unsqueeze(1) * v_split;  // [K, 3]
+                    
+                    // Create 2 children displaced along v_split
+                    auto child1_xyz = split_xyz + displacement;
+                    auto child2_xyz = split_xyz - displacement;
+                    auto new_xyz = torch::cat({child1_xyz, child2_xyz}, 0);  // [2K, 3]
+                    
+                    // Scale conservation: child scale = parent / sqrt(2)
+                    auto new_scales = (split_scales + std::log(1.0f / std::sqrt(2.0f)))
+                                      .repeat({2, 1});  // [2K, 3]
+                    
+                    // Inherit rotation, features, opacity from parent
+                    auto new_rotations = split_rotations.repeat({2, 1});
+                    auto new_features_dc = split_features_dc.repeat({2, 1, 1});
+                    auto new_features_rest = split_features_rest.repeat({2, 1, 1});
+                    auto new_opacity = split_opacity.repeat({2, 1});
+                    auto new_exist_since = torch::ones(
+                        2 * n_split,
+                        torch::TensorOptions().dtype(torch::kInt32).device(device_type_)) * getIteration();
+                    
+                    // MUST REMOVE PARENTS FIRST! 
+                    // prunePoints uses split_mask which has size N.
+                    // If we add children first, the size becomes N + 2K, causing an IndexError.
+                    gaussians_->prunePoints(split_mask);
+
+                    // Add children (appends 2K new points to the back)
+                    gaussians_->densificationPostfix(
+                        new_xyz, new_features_dc, new_features_rest,
+                        new_opacity, new_scales, new_rotations, new_exist_since);
+                    
+                    if (getIteration() % 500 == 0) {
+                        std::cout << "[Molding-GS Strain Split] iter=" << getIteration()
+                                  << " | split=" << n_split
+                                  << " | total=" << gaussians_->xyz_.size(0) << std::endl;
+                    }
+                }
+            }
+
+            // ====================================================================
+            // Molding-GS: SDF-based Pruning (kill floaters)
+            // Removes Gaussians that are far from any observed surface
+            // ====================================================================
+            if (tsdf_config_.enabled && local_tsdf_ && local_tsdf_->numVoxels() > 0 &&
+                getIteration() % tsdf_config_.prune_interval == 0 &&
+                getIteration() > opt_params_.densify_from_iter_ &&
+                (!tsdf_fusion_future_.valid() || tsdf_fusion_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)) {
+                
+                torch::NoGradGuard no_grad_prune;
+                
+                auto xyz = gaussians_->getXYZ().detach();
+                auto sdf_vals = local_tsdf_->querySDF(xyz);
+                auto sdf_weights = local_tsdf_->queryWeight(xyz);
+                
+                // Prune Gaussians with large |SDF| in well-observed regions
+                auto prune_mask = (sdf_vals.abs() > tsdf_config_.prune_sdf_threshold) &
+                                  (sdf_weights > tsdf_config_.min_weight);
+                int num_pruned = prune_mask.sum().item<int>();
+                
+                if (num_pruned > 0) {
+                    // Cap pruning at 5% per iteration
+                    int max_prune = static_cast<int>(gaussians_->xyz_.size(0) * 0.05f);
+                    if (num_pruned > max_prune) {
+                        auto prune_indices_all = prune_mask.nonzero().squeeze(1);
+                        auto sdf_at_candidates = sdf_vals.abs().index({prune_indices_all});
+                        auto [top_sdf, top_idx] = sdf_at_candidates.topk(max_prune);
+                        prune_mask = torch::zeros_like(prune_mask);
+                        prune_mask.index_put_({prune_indices_all.index({top_idx})}, true);
+                        num_pruned = max_prune;
+                    }
+                    
+                    gaussians_->prunePoints(prune_mask);
+                    
+                    if (getIteration() % 500 == 0 || num_pruned > 100) {
+                        std::cout << "[Molding-GS SDF Prune] iter=" << getIteration()
+                                  << " | pruned=" << num_pruned
+                                  << " | remaining=" << gaussians_->xyz_.size(0) << std::endl;
+                    }
+                }
+            }
+
+            // ====================================================================
+            // HYBRID: ConeGS Error-Guided Insertion (supplement to Clone/Split)
+            // Adds extra Gaussians at high-error regions on top of Clone/Split
+            // ====================================================================
+            if (cone_densify_config_.enabled &&
+                (getIteration() > opt_params_.densify_from_iter_) &&
+                (getIteration() % cone_densify_config_.densify_interval == 0)) {
+                
+                // 1. Error-weighted pixel sampling modulated by GVS (Depth Variance)
+                auto sampled_pixels = conegs::errorWeightedSample(
+                    masked_image.detach(), gt_image.detach(), gt_depth.detach(),
+                    cone_densify_config_.budget_per_iter,
+                    cone_densify_config_.min_error_threshold);
+                
+                if (sampled_pixels.size(0) > 0 && has_gt_depth) {
+                    // 2. Get camera intrinsics and pose
+                    Camera& cam_cone = scene_->cameras_.at(viewpoint_cam->camera_id_);
+                    float fx = cam_cone.params_[0];
+                    float fy = cam_cone.params_[1];
+                    float cx = cam_cone.params_[2];
+                    float cy = cam_cone.params_[3];
+                    
+                    // Camera-to-world transform
+                    Sophus::SE3f Tcw_se3 = viewpoint_cam->getPosef();
+                    Eigen::Matrix4f Twc_eigen = Tcw_se3.inverse().matrix();
+                    torch::Tensor Twc = tensor_utils::EigenMatrix2TorchTensor(
+                        Twc_eigen, device_type_);
+                    
+                    // 3. Backproject sampled pixels to 3D using sensor depth
+                    auto [new_xyz, new_colors, new_depths, valid_indices] = 
+                        conegs::backprojectPixels(
+                            sampled_pixels, gt_depth,
+                            gt_image, fx, fy, cx, cy, Twc);
+                    
+                    if (new_xyz.size(0) > 0) {
+                        // 4. Compute cone-based scales
+                        torch::Tensor new_scales;
+                        if (cone_scale_config_.enabled) {
+                            new_scales = conegs::computeConeScale(
+                                new_depths, fx, fy, cone_scale_config_);
+                        } else {
+                            auto dist2 = distCUDA2(new_xyz);
+                            dist2 = torch::clamp_min(dist2, 0.0000001f);
+                            new_scales = torch::log(torch::sqrt(dist2)).unsqueeze(-1).repeat({1, 3});
+                        }
+                        
+                        // 4.5. Advanced ConeGS: Normal-Aligned Surfels (NAS)
+                        // Extract valid pixel locations
+                        auto u_all = sampled_pixels.index({torch::indexing::Slice(), 0});
+                        auto v_all = sampled_pixels.index({torch::indexing::Slice(), 1});
+                        auto u_valid = u_all.index({valid_indices});
+                        auto v_valid = v_all.index({valid_indices});
+
+                        // Compute Surface Normal from Depth Map and convert to World Space Rotation Quaternion
+                        auto new_rotations = conegs::computeNormalsAndRotations(
+                            gt_depth, u_valid, v_valid, new_depths, fx, fy, Twc);
+
+                        // Morphological Squashing: flatten the Gaussian along its local Z-axis (normal)
+                        // flatten_ratio controls thinness: 0.05=20x thin, 0.3=3.3x thin, 1.0=sphere
+                        auto z_scales = new_scales.select(1, 2);
+                        z_scales = z_scales + std::log(cone_densify_config_.flatten_ratio);
+                        new_scales.select(1, 2).copy_(z_scales);
+                        
+                        // 5. Initialize features and opacity
+                        auto new_sh_colors = (new_colors - 0.5f) / 0.28209479177387814f;
+                        auto new_features_dc = new_sh_colors.unsqueeze(1);  // [N, 1, 3]
+                        int64_t n_new = new_xyz.size(0);
+                        int64_t n_rest_sh = gaussians_->features_rest_.size(1);
+                        std::vector<int64_t> rest_size = {n_new, n_rest_sh, 3};
+                        auto new_features_rest = torch::zeros(
+                            at::IntArrayRef(rest_size),
+                            torch::TensorOptions().device(device_type_));
+                        float logit_05 = 0.0f;  // sigmoid(0) = 0.5 (logit 0.5 is 0)
+                        std::vector<int64_t> opa_size = {n_new, 1};
+                        auto new_opacities = torch::ones(
+                            at::IntArrayRef(opa_size),
+                            torch::TensorOptions().device(device_type_)) * logit_05;
+                        
+                        // 6. Add to model
+                        auto new_exist_since = torch::ones(
+                            n_new,
+                            torch::TensorOptions().dtype(torch::kInt32).device(device_type_)) * getIteration();
+                        gaussians_->densificationPostfix(
+                            new_xyz, new_features_dc, new_features_rest,
+                            new_opacities, new_scales, new_rotations, new_exist_since);
+                        
+                        if (getIteration() % 500 == 0) {
+                            std::cout << "[ConeGS Hybrid] iter=" << getIteration()
+                                      << " | inserted=" << new_xyz.size(0)
+                                      << " | total=" << gaussians_->xyz_.size(0) << std::endl;
+                        }
+                    }
+                }
+            }
         }
         
+        // ==================================================================
+        // MIG Phase 2: Gap-Filling Insertion (after densification window)
+        // Insert new Gaussians at remaining under-covered high-error pixels
+        // Only runs AFTER Clone/Split has finished to avoid competition
+        // ==================================================================
+        if (mig_config_.enabled &&
+            has_gt_depth &&
+            (getIteration() > opt_params_.densify_until_iter_) &&
+            (getIteration() < opt_params_.densify_until_iter_ + mig_config_.post_densify_window) &&
+            (getIteration() % mig_config_.densify_interval == 0)) {
+
+            torch::NoGradGuard no_grad_mig;
+
+            // Safety: clamp T_map to [0,1]
+            auto T_map_safe = T_map.detach().clamp(0.0f, 1.0f);
+            if (T_map_safe.is_cuda() && T_map_safe.numel() > 0) {
+
+            // BUG FIX: mask BOTH rendered and GT → avoid artificial error at undistort borders
+            auto masked_gt_mig = gt_image.detach() * mask.detach();  // [3, H, W]
+            auto error_map = (masked_image.detach() - masked_gt_mig).abs().mean(0);  // [H, W]
+
+            // Also exclude mask==0 pixels (border) from valid candidates
+            auto mask_2d = mask.detach().squeeze(0);  // [H, W] — undistored area mask
+            auto mig_score = T_map_safe * error_map;  // [H, W]
+
+            // Mask: T > threshold AND error > threshold AND inside valid image area
+            auto valid_mask = (T_map_safe > mig_config_.min_T_threshold) &
+                              (error_map > mig_config_.min_error_threshold) &
+                              (mask_2d > 0.5f);
+
+            // Get valid pixel indices
+            auto valid_indices = valid_mask.nonzero().contiguous();  // [N_valid, 2] — (row, col)
+            int64_t n_valid = valid_indices.size(0);
+
+            if (n_valid > 0) {
+                // Sample top-K pixels by MIG score
+                auto valid_scores = mig_score.index({
+                    valid_indices.index({torch::indexing::Slice(), 0}),
+                    valid_indices.index({torch::indexing::Slice(), 1})});  // [N_valid]
+                int64_t budget = std::min((int64_t)mig_config_.budget_per_iter, n_valid);
+                auto [top_scores_mig, top_idx_mig] = valid_scores.topk(budget, 0, true, false);
+                auto sampled_rc = valid_indices.index({top_idx_mig});  // [budget, 2]
+
+                // Get camera intrinsics
+                Camera& cam_mig = scene_->cameras_.at(viewpoint_cam->camera_id_);
+                float fx_mig = cam_mig.params_[0];
+                float fy_mig = cam_mig.params_[1];
+                float cx_mig = cam_mig.params_[2];
+                float cy_mig = cam_mig.params_[3];
+
+                // Camera-to-world transform
+                Sophus::SE3f Tcw_se3_mig = viewpoint_cam->getPosef();
+                Eigen::Matrix4f Twc_eigen_mig = Tcw_se3_mig.inverse().matrix();
+                torch::Tensor Twc_mig = tensor_utils::EigenMatrix2TorchTensor(Twc_eigen_mig, device_type_);
+
+                // Sample depth at selected pixels
+                auto rows_mig = sampled_rc.index({torch::indexing::Slice(), 0}).contiguous();
+                auto cols_mig = sampled_rc.index({torch::indexing::Slice(), 1}).contiguous();
+                auto sampled_depth_mig = gt_depth.index({rows_mig, cols_mig});  // [budget]
+                auto depth_valid_mig = (sampled_depth_mig > RGBD_min_depth_) & (sampled_depth_mig < RGBD_max_depth_);
+                auto valid_rows_mig  = rows_mig.index({depth_valid_mig}).contiguous();
+                auto valid_cols_mig  = cols_mig.index({depth_valid_mig}).contiguous();
+                auto valid_depth_mig = sampled_depth_mig.index({depth_valid_mig}).contiguous();
+
+                int64_t n_insert_mig = valid_rows_mig.size(0);
+                if (n_insert_mig > 0) {
+                    // Unproject to 3D: X = (u - cx) * d / fx, Y = (v - cy) * d / fy, Z = d
+                    auto u_mig = valid_cols_mig.to(torch::kFloat32);
+                    auto v_mig = valid_rows_mig.to(torch::kFloat32);
+                    auto Xc_mig = (u_mig - cx_mig) * valid_depth_mig / fx_mig;
+                    auto Yc_mig = (v_mig - cy_mig) * valid_depth_mig / fy_mig;
+                    auto Zc_mig = valid_depth_mig;
+                    auto pts_cam_mig = torch::stack({Xc_mig, Yc_mig, Zc_mig, torch::ones_like(Zc_mig)}, 1);
+                    auto new_xyz_h_mig = torch::mm(Twc_mig, pts_cam_mig.t());  // [4, N]
+                    auto new_xyz_mig = new_xyz_h_mig.index({torch::indexing::Slice(0, 3),
+                                                             torch::indexing::Slice()}).t().contiguous();  // [N, 3]
+
+                    // Safety: check for NaN/Inf positions — skip if any found
+                    auto pos_valid = torch::isfinite(new_xyz_mig).all(1);  // [N]
+                    if (pos_valid.any().item<bool>()) {
+                        new_xyz_mig = new_xyz_mig.index({pos_valid}).contiguous();
+                        valid_rows_mig = valid_rows_mig.index({pos_valid}).contiguous();
+                        valid_cols_mig = valid_cols_mig.index({pos_valid}).contiguous();
+                        valid_depth_mig = valid_depth_mig.index({pos_valid}).contiguous();
+                        n_insert_mig = new_xyz_mig.size(0);
+                    } else {
+                        n_insert_mig = 0;
+                    }
+
+                    if (n_insert_mig > 0) {
+                    // Sample colors from GT image [3, H, W] → [N, 3]
+                    auto new_colors_mig = gt_image.index({torch::indexing::Slice(), valid_rows_mig, valid_cols_mig})
+                                                  .permute({1, 0}).contiguous();
+
+                    // FIX: Use depth-proportional scale instead of distCUDA2
+                    // distCUDA2 crashes with small point clouds (<8 points)
+                    // Depth-proportional: scale ∝ pixel_size_in_world = depth / focal_length
+                    float avg_focal = 0.5f * (fx_mig + fy_mig);
+                    auto pixel_scale = valid_depth_mig / avg_focal;  // [N] — world-space pixel size
+                    auto new_scales_mig = torch::log(pixel_scale).unsqueeze(-1).repeat({1, 3});  // [N, 3]
+
+                    // Initialize SH features from RGB (RGB2SH conversion)
+                    auto new_sh_mig = (new_colors_mig - 0.5f) / 0.28209479177387814f;
+                    auto new_features_dc_mig = new_sh_mig.unsqueeze(1);  // [N, 1, 3]
+                    int64_t n_rest_sh_mig = gaussians_->features_rest_.size(1);
+                    auto new_features_rest_mig = torch::zeros(
+                        {n_insert_mig, n_rest_sh_mig, 3},
+                        torch::TensorOptions().device(device_type_));
+
+                    // FIX: Use sigmoid(0.5) ≈ logit(0.5) = 0 as initial opacity
+                    // logit(0.1) = -2.2 was too transparent → scattered light hurt existing Gaussians
+                    float logit_05_mig = 0.0f;  // sigmoid(0) = 0.5
+                    auto new_opacities_mig = torch::ones(
+                        {n_insert_mig, 1},
+                        torch::TensorOptions().device(device_type_)) * logit_05_mig;
+                    auto new_rotations_mig = torch::zeros(
+                        {n_insert_mig, 4},
+                        torch::TensorOptions().device(device_type_));
+                    new_rotations_mig.index_put_({torch::indexing::Slice(), 0}, 1.0f);
+
+                    auto new_exist_since_mig = torch::ones(
+                        n_insert_mig,
+                        torch::TensorOptions().dtype(torch::kInt32).device(device_type_)) * getIteration();
+                    gaussians_->densificationPostfix(
+                        new_xyz_mig, new_features_dc_mig, new_features_rest_mig,
+                        new_opacities_mig, new_scales_mig, new_rotations_mig, new_exist_since_mig);
+
+                    if (getIteration() % 500 == 0) {
+                        std::cout << "[MIG] iter=" << getIteration()
+                                  << " | inserted=" << n_insert_mig
+                                  << " | total=" << gaussians_->xyz_.size(0) << std::endl;
+                    }
+                    } // end n_insert_mig > 0 (after NaN filter)
+                }
+            }
+            } // end T_map_safe guard
+        }
+
         // CG-SLAM: Uncertainty-based pruning (Eq. 13 approximation)
         // Paper: νᵢ = (1/(M₁+...+Mₖ)) Σ Σ αᵢᵏ·ᵖ Tᵢᵏ·ᵖ (Dₚᵏ - dᵢᵏ)²
         // Only runs when Uncertainty.enable: 1 in YAML config
@@ -2002,6 +2647,57 @@ void GaussianMapper::handleNewKeyframe(
     if (isdoingInactiveGeoDensify())
         increasePcdByKeyframeInactiveGeoDensify(pkf);
 
+    // ====================================================================
+    // Molding-GS: Fuse depth into Local TSDF (ASYNC — non-blocking)
+    // integrateDepthFrame is CPU-heavy. We launch it in a background future
+    // so the main mapping loop is not blocked and can keep training/densifying.
+    // ====================================================================
+    if (tsdf_config_.enabled && local_tsdf_ && sensor_type_ == RGBD &&
+        imgAux_undistorted.data) {
+        // Check if previous fusion is done — never block the GPU loop.
+        bool prev_done = !tsdf_fusion_future_.valid() ||
+                         tsdf_fusion_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+        if (prev_done) {
+            // Safe to launch a new async fusion for this keyframe
+            cv::Mat depth_copy = imgAux_undistorted.clone();
+            Camera cam_tsdf = scene_->cameras_.at(std::get<1>(kf));
+            float fx_tsdf = cam_tsdf.params_[0];
+            float fy_tsdf = cam_tsdf.params_[1];
+            float cx_tsdf = cam_tsdf.params_[2];
+            float cy_tsdf = cam_tsdf.params_[3];
+            Sophus::SE3f Tcw = std::get<2>(kf);
+            Eigen::Matrix4f Twc_eigen = Tcw.inverse().matrix();
+            Eigen::Vector3f cam_pos = Twc_eigen.block<3,1>(0, 3);
+            float min_depth = RGBD_min_depth_;
+            float max_depth = RGBD_max_depth_;
+            float max_radius = tsdf_config_.max_radius;
+            local_tsdf::LocalTSDF* tsdf_ptr = local_tsdf_.get();
+
+            // Launch async fusion — does NOT block the mapping thread
+            tsdf_fusion_future_ = std::async(std::launch::async, [=]() {
+                try {
+                    tsdf_ptr->integrateDepthFrame(
+                        depth_copy, Twc_eigen,
+                        fx_tsdf, fy_tsdf, cx_tsdf, cy_tsdf,
+                        min_depth, max_depth);
+                    tsdf_ptr->evictDistant(cam_pos, max_radius);
+                } catch (const std::exception& e) {
+                    std::cerr << "[Molding-GS] TSDF fusion error: " << e.what() << std::endl;
+                }
+            });
+
+            static int tsdf_fusion_count = 0;
+            tsdf_fusion_count++;
+            if (tsdf_fusion_count % 10 == 0 || tsdf_fusion_count <= 3) {
+                std::cout << "[Molding-GS] TSDF fusion #" << tsdf_fusion_count
+                          << " (async) | voxels≈" << local_tsdf_->numVoxels()
+                          << " | mem≈" << (local_tsdf_->memoryUsageBytes() / 1024)
+                          << "KB" << std::endl;
+            }
+        }
+        // If prev_done == false: skip this keyframe's fusion to keep GPU running
+    }
+
     // Prepare multi resolution images for training
     if (device_type_ == torch::kCUDA) {
         cv::cuda::GpuMat img_gpu;
@@ -2542,146 +3238,8 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
                 has_geo_aware = false;
             }
         }
-        // ===== Error-Guided Densification (EGD / SIG-Densify) =====
-        // Filter candidates based on rendering error analysis + marginal information gain
-        if (egd_config_.enabled && initial_mapped_ && gaussians_->xyz_.size(0) > 5000) {
-            try {
-                torch::NoGradGuard no_grad;
-                
-                // Lightweight render from keyframe viewpoint
-                auto render_pkg = GaussianRenderer::render(
-                    pkf, pkf->image_height_, pkf->image_width_,
-                    gaussians_, pipe_params_, background_, override_color_);
-                auto rendered_image = std::get<0>(render_pkg);   // [C, H, W]
-                auto rendered_depth = std::get<4>(render_pkg);   // [1, H, W]
-                
-                auto gt_image = pkf->original_image_;            // [C, H, W]
-                
-                // Get camera intrinsics
-                Camera& cam_egd = scene_->cameras_.at(pkf->camera_id_);
-                float fx = cam_egd.params_[0];
-                float fy = cam_egd.params_[1];
-                float cx = cam_egd.params_[2];
-                float cy = cam_egd.params_[3];
-                
-                // Compute world-to-camera transform for projection
-                Sophus::SE3f Tcw_se3 = pkf->getPosef();
-                torch::Tensor Tcw_tensor = tensor_utils::EigenMatrix2TorchTensor(
-                    Tcw_se3.matrix(), device_type_);
-                
-                // Project candidate 3D points to pixel coordinates
-                auto [cand_pixels, cand_depths, cand_valid] = 
-                    error_guided::computeCandidatePixelsAndDepths(
-                        points3D_valid, Tcw_tensor,
-                        fx, fy, cx, cy,
-                        pkf->image_width_, pkf->image_height_);
-                
-                // Only process points with valid projections
-                int n_valid_proj = cand_valid.sum().item<int>();
-                
-                if (n_valid_proj > 50) {
-                    auto valid_indices = torch::nonzero(cand_valid).squeeze(1);
-                    auto valid_points = points3D_valid.index({valid_indices});
-                    auto valid_colors = colors_valid.index({valid_indices});
-                    auto valid_pixels = cand_pixels.index({valid_indices}).to(torch::kInt32);
-                    auto valid_depths = cand_depths.index({valid_indices});
-                    
-                    // Run error-guided selection
-                    // Create ORB bypass mask: mark candidates that are ORB keypoints
-                    auto orb_bypass = torch::zeros({n_valid_proj}, 
-                        torch::TensorOptions().dtype(torch::kBool).device(device_type_));
-                    {
-                        // Build set of ORB pixel linear indices
-                        int width = pkf->image_width_;
-                        std::unordered_set<int> orb_pixel_set;
-                        int nkps_twice = pkf->kps_pixel_.size();
-                        for (int kpidx = 0; kpidx < nkps_twice; kpidx += 2) {
-                            int orb_u = static_cast<int>(pkf->kps_pixel_[kpidx]);
-                            int orb_v = static_cast<int>(pkf->kps_pixel_[kpidx + 1]);
-                            orb_pixel_set.insert(orb_v * width + orb_u);
-                        }
-                        // Check each valid candidate pixel against ORB set
-                        auto vp_cpu = valid_pixels.cpu();
-                        auto vp_u = vp_cpu.index({torch::indexing::Slice(), 0}).data_ptr<int32_t>();
-                        auto vp_v = vp_cpu.index({torch::indexing::Slice(), 1}).data_ptr<int32_t>();
-                        auto orb_bypass_cpu = torch::zeros({n_valid_proj}, torch::TensorOptions().dtype(torch::kBool));
-                        auto orb_data = orb_bypass_cpu.data_ptr<bool>();
-                        for (int i = 0; i < n_valid_proj; ++i) {
-                            int lin = vp_v[i] * width + vp_u[i];
-                            if (orb_pixel_set.count(lin)) orb_data[i] = true;
-                        }
-                        orb_bypass = orb_bypass_cpu.to(device_type_);
-                    }
-                    
-                    auto egd_result = error_guided::errorGuidedSelect(
-                        valid_points, valid_colors,
-                        valid_pixels, valid_depths,
-                        rendered_image, gt_image, rendered_depth,
-                        pkf->image_width_, pkf->image_height_,
-                        egd_config_, orb_bypass);
-                    
-                    std::cout << "[EGD] KF " << pkf->fid_
-                              << " | total=" << egd_result.n_total
-                              << " efd_rej=" << egd_result.n_efd_rejected
-                              << " mig_rej=" << egd_result.n_mig_rejected
-                              << " redund=" << egd_result.n_redundancy_rejected
-                              << " budget=" << egd_result.n_budget_rejected
-                              << " accepted=" << egd_result.n_accepted << std::endl;
-                    
-                    if (egd_result.n_accepted > 0) {
-                        // Replace candidates with accepted ones
-                        points3D_valid = egd_result.accepted_points;
-                        colors_valid = egd_result.accepted_colors;
-                        
-                        // Apply confidence-weighted opacity if GeoAware is active
-                        if (has_geo_aware) {
-                            // Re-select GeoAware params for accepted indices
-                            auto accepted_mask_in_valid = egd_result.accepted_mask;
-                            // Map accepted indices back to original geo_params
-                            auto geo_indices = valid_indices.index({torch::nonzero(accepted_mask_in_valid).squeeze(1)});
-                            
-                            if (geo_indices.numel() > 0 && geo_indices.max().item<int64_t>() < geo_rotations.size(0)) {
-                                geo_rotations = geo_rotations.index({geo_indices});
-                                geo_scale_mods = geo_scale_mods.index({geo_indices});
-                                geo_opacities = geo_opacities.index({geo_indices});
-                                
-                                // Override opacity based on confidence level
-                                for (int ci = 0; ci < egd_result.n_accepted; ++ci) {
-                                    int conf = egd_result.confidence_levels[ci].item<int>();
-                                    float opa_val;
-                                    if (conf == 2)
-                                        opa_val = egd_config_.opacity_high;
-                                    else if (conf == 1)
-                                        opa_val = egd_config_.opacity_mid;
-                                    else
-                                        opa_val = egd_config_.opacity_low;
-                                    // logit transform: logit(p) = log(p / (1-p))
-                                    geo_opacities[ci][0] = std::log(opa_val / (1.0f - opa_val));
-                                    
-                                    // Scale penalty
-                                    if (conf == 1)
-                                        geo_scale_mods[ci] *= egd_config_.scale_penalty_mid;
-                                    else if (conf == 0)
-                                        geo_scale_mods[ci] *= egd_config_.scale_penalty_low;
-                                }
-                            } else {
-                                has_geo_aware = false;  // Fallback
-                            }
-                        }
-                    } else {
-                        // All rejected — use empty tensors
-                        points3D_valid = torch::zeros({0, 3}, torch::TensorOptions().device(device_type_));
-                        colors_valid = torch::zeros({0, 3}, torch::TensorOptions().device(device_type_));
-                        has_geo_aware = false;
-                        std::cout << "[EGD] KF " << pkf->fid_ << " | All candidates rejected" << std::endl;
-                    }
-                }
-                // else: too few valid projections, skip EGD filtering
-            } catch (const std::exception& e) {
-                std::cerr << "[EGD] Warning: " << e.what() << " — using unfiltered candidates" << std::endl;
-                // Fall through: use original points3D_valid and colors_valid
-            }
-        }
+        // [ConeGS] Old EGD block removed — densification is now handled
+        // by ConeGS error-guided insertion in trainForOneIteration().
 
         // Add new points to the cache
         if (points3D_valid.size(0) > 0) {
@@ -2703,6 +3261,7 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
                 depth_cache_opacities_ = torch::cat({depth_cache_opacities_, geo_opacities}, /*dim=*/0);
             }
         }
+        ++depth_cached_;   // Only increment when we actually cached points
         }
 // savePly(result_dir_ / (std::to_string(getIteration()) + "_" + std::to_string(pkf->fid_) + "_1_after_inactive_geo_densify"));
     }
@@ -2715,7 +3274,6 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
     }
 
     pkf->done_inactive_geo_densify_ = true;
-    ++depth_cached_;
 
     if (depth_cached_ >= max_depth_cached_) {
         depth_cached_ = 0;
@@ -2833,9 +3391,10 @@ cv::Mat GaussianMapper::renderFromPose(
         throw std::runtime_error("[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
     }
 
-    // CG-SLAM: Updated to match 8-element return type (includes uncertainty)
+    // MIG/ESC: Updated to match 11-element return type (includes T_map, depths, cov2D)
     std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor,
-               at::Tensor, at::Tensor, at::Tensor, at::Tensor> render_pkg;
+               at::Tensor, at::Tensor, at::Tensor, at::Tensor, 
+               at::Tensor, at::Tensor, at::Tensor> render_pkg;
     {
         std::unique_lock<std::mutex> lock_render(mutex_render_);
         // Render

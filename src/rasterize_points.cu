@@ -20,6 +20,7 @@
 #include <memory>
 #include "cuda_rasterizer/config.h"
 #include "cuda_rasterizer/rasterizer.h"
+#include "cuda_rasterizer/rasterizer_impl.h" // ESC: for GeometryState::fromChunk
 #include "include/rasterize_points.h"
 #include <fstream>
 #include <string>
@@ -35,8 +36,10 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 
 // Depth-Photo-SLAM: Updated return type to include depth outputs
 // CG-SLAM: Added gt_depth input and uncertainty output for L_var
+// MIG: Added out_T (transmittance map) as 11th output
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
+           torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -79,6 +82,13 @@ RasterizeGaussiansCUDA(
   
   // CG-SLAM: Create uncertainty output tensor for L_var
   torch::Tensor out_uncertainty = torch::zeros({H, W}, float_opts);
+  
+  // MIG: Create transmittance output tensor T[H, W]
+  torch::Tensor out_T = torch::zeros({H, W}, float_opts);
+  
+  // ESC: Create per-Gaussian output tensors (will be filled after forward)
+  torch::Tensor out_cov2D = torch::zeros({P, 3}, float_opts);
+  torch::Tensor out_view_depths = torch::zeros({P}, float_opts);
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
@@ -130,11 +140,25 @@ RasterizeGaussiansCUDA(
 		// CG-SLAM: L_var support
 		gt_depth_ptr,
 		out_uncertainty.contiguous().data_ptr<float>(),
-		radii.contiguous().data_ptr<int>());
+		radii.contiguous().data_ptr<int>(),
+		// MIG: transmittance output
+		out_T.contiguous().data_ptr<float>());
+
+	  // ESC: Copy per-Gaussian cov2D and depths from geomState
+	  // geomBuffer contains the GeometryState chunk; parse it to get pointers
+	  {
+		  char* geom_ptr = reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr());
+		  // Re-create GeometryState from the chunk to get pointers
+		  char* geom_parse = geom_ptr;
+		  CudaRasterizer::GeometryState geomState = CudaRasterizer::GeometryState::fromChunk(geom_parse, P);
+		  // Copy cov2D [P*3 floats] and depths [P floats] from device to device
+		  cudaMemcpy(out_cov2D.data_ptr<float>(), geomState.cov2D, P * 3 * sizeof(float), cudaMemcpyDeviceToDevice);
+		  cudaMemcpy(out_view_depths.data_ptr<float>(), geomState.depths, P * sizeof(float), cudaMemcpyDeviceToDevice);
+	  }
   }
-  // CG-SLAM: Return 10 tensors including uncertainty output
   return std::make_tuple(rendered, out_color, radii, geomBuffer, binningBuffer, imgBuffer,
-                         out_depth, out_depth_sq, out_median_depth, out_uncertainty);
+                         out_depth, out_depth_sq, out_median_depth, out_uncertainty, out_T,
+                         out_cov2D, out_view_depths);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -202,6 +226,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  reinterpret_cast<char*>(binningBuffer.contiguous().data_ptr()),
 	  reinterpret_cast<char*>(imageBuffer.contiguous().data_ptr()),
 	  dL_dout_color.contiguous().data_ptr<float>(),
+	  nullptr, // ESC: no cov2D gradients in basic backward
 	  dL_dmeans2D.contiguous().data_ptr<float>(),
 	  dL_dconic.contiguous().data_ptr<float>(),  
 	  dL_dopacity.contiguous().data_ptr<float>(),
@@ -306,6 +331,7 @@ M = sh.size(1);
   dL_dout_color.contiguous().data_ptr<float>(),
   dL_dout_depth.numel() > 0 ? dL_dout_depth.contiguous().data_ptr<float>() : nullptr,
   dL_dout_depth_sq.numel() > 0 ? dL_dout_depth_sq.contiguous().data_ptr<float>() : nullptr,
+  nullptr, // ESC: no cov2D gradients in depth backward (for now)
   dL_dmeans2D.contiguous().data_ptr<float>(),
   dL_dconic.contiguous().data_ptr<float>(),  
   dL_dopacity.contiguous().data_ptr<float>(),

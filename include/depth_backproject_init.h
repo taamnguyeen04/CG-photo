@@ -12,6 +12,11 @@
  *    - High-edge blocks → small stride (dense, captures detail)
  *    - Low-edge blocks  → large stride (sparse, saves budget)
  *    - Produces content-adaptive spatial resolution
+ *
+ * Optional pre-processing:
+ *   - Guided Image Filter (He et al. 2010): edge-preserving depth smoothing
+ *     using RGB as guidance image. Reduces depth noise while keeping edges.
+ *   - Depth gradient filter: rejects flying pixels at depth discontinuities.
  */
 
 #pragma once
@@ -19,6 +24,7 @@
 #include <torch/torch.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/cudaimgproc.hpp>
+#include <opencv2/ximgproc.hpp>
 #include <iostream>
 #include <chrono>
 #include <random>
@@ -50,7 +56,57 @@ struct DepthBackprojectConfig {
     int max_points_per_keyframe = 5000; // Budget cap (0 = unlimited)
     float min_depth = 0.001f;   // Min valid depth (meters)
     float max_depth = 10.0f;    // Max valid depth (meters)
+
+    // Guided Image Filter (edge-preserving depth smoothing)
+    bool guided_filter_enabled = false;   // Enable Guided Filter pre-processing
+    int guided_filter_radius = 4;         // Filter radius (window = 2r+1)
+    float guided_filter_eps = 0.01f;      // Regularization epsilon (smaller = smoother)
+
+    // Depth gradient filter (reject flying pixels)
+    bool depth_grad_filter = false;       // Enable depth gradient rejection
+    float depth_grad_threshold = 0.5f;    // Max depth gradient (m/pixel)
 };
+
+/**
+ * Apply Guided Image Filter to smooth depth using RGB as guidance.
+ * He et al., "Guided Image Filtering", ECCV 2010.
+ *
+ * The filter computes output q_i = a_k * I_i + b_k as a local linear model
+ * of the guidance image I, preserving edges in I while smoothing depth.
+ *
+ * @param depth_cpu      Single-channel depth map (CV_32FC1)
+ * @param img_rgb_cpu    RGB guidance image (CV_32FC3 or CV_8UC3)
+ * @param radius         Filter radius (window size = 2*radius + 1)
+ * @param eps            Regularization (smaller = smoother, larger = preserves more)
+ * @return Filtered depth map (CV_32FC1)
+ */
+inline cv::Mat applyGuidedFilterOnDepth(
+    const cv::Mat& depth_cpu,
+    const cv::Mat& img_rgb_cpu,
+    int radius,
+    float eps)
+{
+    // Prepare guidance image: convert to 8-bit if needed
+    cv::Mat guidance;
+    if (img_rgb_cpu.type() == CV_32FC3) {
+        img_rgb_cpu.convertTo(guidance, CV_8UC3, 255.0);
+    } else {
+        guidance = img_rgb_cpu;
+    }
+
+    // Create valid mask (non-zero depth)
+    cv::Mat depth_valid_mask = (depth_cpu > 0.0f);
+
+    // Apply guided filter: RGB guides the depth smoothing
+    // Edges in RGB → edges preserved in depth
+    cv::Mat depth_filtered;
+    cv::ximgproc::guidedFilter(guidance, depth_cpu, depth_filtered, radius, eps);
+
+    // Restore invalid (zero) depth: don't hallucinate depth where there is none
+    depth_filtered.setTo(0.0f, ~depth_valid_mask);
+
+    return depth_filtered;
+}
 
 /**
  * Select pixels using uniform stride.
@@ -100,7 +156,7 @@ inline torch::Tensor selectStrideDepthPixels(
  * @return Boolean mask tensor [H*W] on device
  */
 inline torch::Tensor selectAdaptiveStridePixels(
-    const torch::Tensor& depth,
+    torch::Tensor depth,
     const cv::cuda::GpuMat& img_rgb_gpu,
     int width,
     int height,
@@ -114,10 +170,34 @@ inline torch::Tensor selectAdaptiveStridePixels(
     int block_size = config.block_size;
     float edge_th = config.edge_threshold;
 
-    // --- Step 1: Compute edge map from RGB ---
+    // --- Step 0: Download RGB to CPU (shared by all steps) ---
     cv::Mat img_rgb_cpu;
     img_rgb_gpu.download(img_rgb_cpu);
 
+    // --- Step 0a: Guided Filter pre-processing on depth ---
+    if (config.guided_filter_enabled) {
+        // Download depth tensor to cv::Mat for filtering
+        auto depth_cpu_tensor = depth.to(torch::kCPU).contiguous();
+        cv::Mat depth_mat(height, width, CV_32FC1,
+                         depth_cpu_tensor.data_ptr<float>());
+
+        cv::Mat depth_filtered = applyGuidedFilterOnDepth(
+            depth_mat, img_rgb_cpu,
+            config.guided_filter_radius,
+            config.guided_filter_eps);
+
+        // Convert filtered depth back to tensor
+        depth = torch::from_blob(
+            depth_filtered.data, {height * width},
+            torch::TensorOptions().dtype(torch::kFloat32))
+            .clone().to(device_type);
+
+        std::cout << "[DepthBackproject] Guided Filter applied (r="
+                  << config.guided_filter_radius
+                  << ", eps=" << config.guided_filter_eps << ")" << std::endl;
+    }
+
+    // --- Step 1: Compute edge map from RGB ---
     cv::Mat gray;
     if (img_rgb_cpu.type() == CV_32FC3) {
         cv::Mat rgb8;
@@ -137,6 +217,36 @@ inline torch::Tensor selectAdaptiveStridePixels(
     cv::minMaxLoc(edge_mag, nullptr, &max_edge);
     if (max_edge > 0)
         edge_mag /= static_cast<float>(max_edge);
+
+    // --- Step 1b: Depth gradient filter (reject flying pixels) ---
+    cv::Mat depth_grad_mask;
+    int depth_grad_rejected = 0;
+    if (config.depth_grad_filter) {
+        // Download (possibly filtered) depth for gradient computation
+        auto depth_cpu_t = depth.to(torch::kCPU).contiguous();
+        cv::Mat depth_mat(height, width, CV_32FC1,
+                         depth_cpu_t.data_ptr<float>());
+
+        cv::Mat dgrad_x, dgrad_y, dgrad_mag;
+        cv::Sobel(depth_mat, dgrad_x, CV_32F, 1, 0, 3);
+        cv::Sobel(depth_mat, dgrad_y, CV_32F, 0, 1, 3);
+        cv::magnitude(dgrad_x, dgrad_y, dgrad_mag);
+        // Normalize by Sobel scale factor (kernel size 3 → scale 8)
+        dgrad_mag /= 8.0f;
+
+        // Create mask: true where gradient is acceptable
+        depth_grad_mask = cv::Mat(height, width, CV_8UC1, cv::Scalar(255));
+        for (int r = 0; r < height; ++r) {
+            const float* grow = dgrad_mag.ptr<float>(r);
+            uchar* mrow = depth_grad_mask.ptr<uchar>(r);
+            for (int c = 0; c < width; ++c) {
+                if (grow[c] > config.depth_grad_threshold) {
+                    mrow[c] = 0;
+                    ++depth_grad_rejected;
+                }
+            }
+        }
+    }
 
     // --- Step 2: Compute per-block max edge strength ---
     int grid_h = (height + block_size - 1) / block_size;
@@ -178,6 +288,10 @@ inline torch::Tensor selectAdaptiveStridePixels(
 
             for (int r = r_start; r < r_end; r += local_stride) {
                 for (int c = c_start; c < c_end; c += local_stride) {
+                    // Skip flying pixels rejected by depth gradient filter
+                    if (config.depth_grad_filter &&
+                        depth_grad_mask.at<uchar>(r, c) == 0)
+                        continue;
                     target_list.push_back(r * width + c);
                 }
             }
@@ -244,8 +358,10 @@ inline torch::Tensor selectAdaptiveStridePixels(
               << "stride=[" << stride_min << "," << stride_max << "]"
               << " | blocks: dense=" << n_dense_blocks
               << " sparse=" << n_sparse_blocks
-              << " | edge=" << edge_keep << " flat=" << flat_keep
-              << " | selected=" << total_selected << " pts"
+              << " | edge=" << edge_keep << " flat=" << flat_keep;
+    if (config.depth_grad_filter)
+        std::cout << " | grad_rejected=" << depth_grad_rejected;
+    std::cout << " | selected=" << total_selected << " pts"
               << " (" << std::fixed << std::setprecision(1)
               << (100.0f * total_selected / total_pixels) << "% coverage, "
               << elapsed_ms << "ms)" << std::endl;

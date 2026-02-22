@@ -149,6 +149,7 @@ __global__ void computeCov2DCUDA(int P,
 	const float tan_fovx, float tan_fovy,
 	const float* view_matrix,
 	const float* dL_dconics,
+	const float* dL_dcov2Ds, // ESC
 	float3* dL_dmeans,
 	float* dL_dcov)
 {
@@ -210,6 +211,12 @@ __global__ void computeCov2DCUDA(int P,
 		dL_da = denom2inv * (-c * c * dL_dconic.x + 2 * b * c * dL_dconic.y + (denom - a * c) * dL_dconic.z);
 		dL_dc = denom2inv * (-a * a * dL_dconic.z + 2 * a * b * dL_dconic.y + (denom - a * c) * dL_dconic.x);
 		dL_db = denom2inv * 2 * (b * c * dL_dconic.x - (denom + 2 * b * b) * dL_dconic.y + a * b * dL_dconic.z);
+
+		if (dL_dcov2Ds != nullptr) {
+			dL_da += dL_dcov2Ds[idx * 3 + 0];
+			dL_db += dL_dcov2Ds[idx * 3 + 1];
+			dL_dc += dL_dcov2Ds[idx * 3 + 2];
+		}
 
 		// Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry, 
 		// given gradients w.r.t. 2D covariance matrix (diagonal).
@@ -573,6 +580,7 @@ void BACKWARD::preprocess(
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
 	const float* dL_dconic,
+	const float* dL_dcov2Ds, // ESC
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
 	float* dL_dcov3D,
@@ -595,6 +603,7 @@ void BACKWARD::preprocess(
 		tan_fovy,
 		viewmatrix,
 		dL_dconic,
+		dL_dcov2Ds, // ESC
 		(float3*)dL_dmean3D,
 		dL_dcov3D);
 

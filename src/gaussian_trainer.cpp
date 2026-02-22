@@ -80,6 +80,10 @@ void GaussianTrainer::trainingOnce(
         // auto depth = std::get<4>(render_pkg);
         // auto depth_sq = std::get<5>(render_pkg);
         // auto median_depth = std::get<6>(render_pkg);
+        // auto uncertainty = std::get<7>(render_pkg);
+        // auto T_map = std::get<8>(render_pkg);
+        // auto view_depths = std::get<9>(render_pkg);
+        // auto view_cov2D = std::get<10>(render_pkg);
 
         // Loss
         auto gt_image = viewpoint_cam->original_image_.cuda();

@@ -59,6 +59,19 @@ struct WaveletPyramidConfig {
 };
 
 /**
+ * EFD (Error Frequency Decomposition) configuration
+ * Decomposes rendering error into low-freq (geometry) and high-freq (detail)
+ * components to guide densification gradient boosting.
+ */
+struct EFDConfig {
+    bool enabled = false;           ///< Enable EFD gradient boosting
+    float low_freq_weight = 1.0f;   ///< Weight for low-freq (geometry) error
+    float high_freq_weight = 2.0f;  ///< Weight for high-freq (detail) error
+    float boost_strength = 3.0f;    ///< Max gradient boost multiplier (1.0 = no boost)
+    float min_error_threshold = 0.01f; ///< Min error to apply boost (ignore noise)
+};
+
+/**
  * Get wavelet filter coefficients
  * 
  * @param type Wavelet type
@@ -451,6 +464,75 @@ inline torch::Tensor waveletEdgeLoss(
     auto loss_hh = torch::abs(decomp_rendered.HH - decomp_gt.HH).mean() * hh_weight;
     
     return loss_lh + loss_hl + loss_hh;
+}
+
+/**
+ * EFD: Compute per-pixel gradient boost weight map from rendering error.
+ *
+ * Decomposes |rendered - gt| via Haar wavelet:
+ *   LL  = low-freq error  (geometry/structure missing)
+ *   LH+HL+HH = high-freq error (fine detail missing)
+ *
+ * Returns a [H, W] weight map in [1.0, boost_strength] where high values
+ * indicate pixels where Gaussians should receive boosted gradient accumulation.
+ *
+ * @param rendered  Rendered image [C, H, W]
+ * @param gt        Ground truth image [C, H, W]
+ * @param config    EFD configuration
+ * @return          Weight map [H, W] on same device as input
+ */
+inline torch::Tensor efdComputeWeightMap(
+    const torch::Tensor& rendered,
+    const torch::Tensor& gt,
+    const EFDConfig& config)
+{
+    int H = rendered.size(1);
+    int W = rendered.size(2);
+
+    // Error map: |rendered - gt|, averaged over channels → [H, W]
+    auto error_map = (rendered - gt).abs().mean(0);  // [H, W]
+
+    // Threshold: ignore noise below min_error_threshold
+    auto valid_mask = error_map > config.min_error_threshold;
+
+    // Haar wavelet decomposition of error map
+    auto decomp = haarDecompose2D(error_map);  // LL, LH, HL, HH at [H/2, W/2]
+
+    // Low-freq: geometry error (LL subband)
+    auto low_freq = decomp.LL.abs();   // [H/2, W/2]
+
+    // High-freq: detail error (LH + HL + HH)
+    auto high_freq = decomp.LH.abs() + decomp.HL.abs() + decomp.HH.abs();  // [H/2, W/2]
+
+    // Combine with weights
+    auto combined = low_freq * config.low_freq_weight + high_freq * config.high_freq_weight;  // [H/2, W/2]
+
+    // Upsample back to full resolution [H, W]
+    auto weight_map = torch::nn::functional::interpolate(
+        combined.unsqueeze(0).unsqueeze(0),  // [1, 1, H/2, W/2]
+        torch::nn::functional::InterpolateFuncOptions()
+            .size(std::vector<int64_t>{H, W})
+            .mode(torch::kBilinear)
+            .align_corners(false)
+    ).squeeze(0).squeeze(0);  // [H, W]
+
+    // Normalize to [0, 1]
+    auto w_min = weight_map.min();
+    auto w_max = weight_map.max();
+    float range = (w_max - w_min).item<float>();
+    if (range > 1e-6f) {
+        weight_map = (weight_map - w_min) / (range + 1e-6f);
+    } else {
+        weight_map = torch::zeros_like(weight_map);
+    }
+
+    // Apply valid mask (zero out noise regions)
+    weight_map = weight_map * valid_mask.to(torch::kFloat32);
+
+    // Scale to [1.0, boost_strength]: 1.0 = no boost, boost_strength = max boost
+    weight_map = 1.0f + weight_map * (config.boost_strength - 1.0f);
+
+    return weight_map.contiguous();
 }
 
 }  // namespace wavelet

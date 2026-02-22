@@ -464,6 +464,228 @@ inline torch::Tensor second_order_gradient_loss(
     return torch::abs(lap1 - lap2).mean();
 }
 
+/**
+ * @brief Analytical Epipolar Scale Consistency (ESC) Loss
+ * 
+ * Computes Σ2D analytically from Gaussian params + camera poses in pure PyTorch.
+ * FULLY DIFFERENTIABLE — gradients flow back to scales, rotations, and xyz.
+ * 
+ * Unlike the old ESC which used cov2D from CUDA (detached, no gradients),
+ * this version projects Σ3D → Σ2D analytically:
+ *   Σ3D = R(q) @ diag(s²) @ R(q)ᵀ
+ *   t = W @ [μ, 1]   (view-space position, z = t[2])
+ *   J = [[fx/z, 0, -fx*tx/z²], [0, fy/z, -fy*ty/z²]]
+ *   T = J @ W[:3,:3]
+ *   Σ2D = T @ Σ3D @ Tᵀ
+ *   L_esc = mean(|log(z_A² · det(Σ2D_A)) - log(z_B² · det(Σ2D_B))|)
+ *
+ * @param xyz            Gaussian positions [N, 3] (requires_grad)
+ * @param scales         Activated scales [N, 3] (requires_grad)
+ * @param rotations      Normalized quaternions [N, 4] (w,x,y,z) (requires_grad)
+ * @param viewmatrix_A   View matrix of camera A [4, 4]
+ * @param viewmatrix_B   View matrix of camera B [4, 4]
+ * @param fx_A, fy_A     Focal lengths of camera A
+ * @param fx_B, fy_B     Focal lengths of camera B
+ * @param radii_A        Visibility radii from camera A [N] (int)
+ * @param radii_B        Visibility radii from camera B [N] (int)
+ * @return Scalar ESC loss
+ */
+inline torch::Tensor analytical_esc_loss(
+    const torch::Tensor& xyz,          // [N, 3]
+    const torch::Tensor& scales,       // [N, 3] activated
+    const torch::Tensor& rotations,    // [N, 4] normalized quaternions (w, x, y, z)
+    const torch::Tensor& viewmatrix_A, // [4, 4]
+    const torch::Tensor& viewmatrix_B, // [4, 4]
+    float fx_A, float fy_A,
+    float fx_B, float fy_B,
+    const torch::Tensor& radii_A,      // [N] int
+    const torch::Tensor& radii_B)      // [N] int
+{
+    // --- Step 0: Find co-visible Gaussians ---
+    auto covisible = (radii_A > 0) & (radii_B > 0);
+    int K = covisible.sum().item<int>();
+    
+    if (K < 100) {
+        return torch::zeros(1, xyz.options());
+    }
+    
+    // Select co-visible subset
+    auto pos = xyz.index({covisible});        // [K, 3]
+    auto s = scales.index({covisible});       // [K, 3]
+    auto q = rotations.index({covisible});    // [K, 4]
+    
+    // --- Step 1: Quaternion → Rotation matrix [K, 3, 3] ---
+    auto qw = q.index({"...", 0});
+    auto qx = q.index({"...", 1});
+    auto qy = q.index({"...", 2});
+    auto qz = q.index({"...", 3});
+    
+    auto r00 = 1.f - 2.f * (qy*qy + qz*qz);
+    auto r01 = 2.f * (qx*qy - qw*qz);
+    auto r02 = 2.f * (qx*qz + qw*qy);
+    auto r10 = 2.f * (qx*qy + qw*qz);
+    auto r11 = 1.f - 2.f * (qx*qx + qz*qz);
+    auto r12 = 2.f * (qy*qz - qw*qx);
+    auto r20 = 2.f * (qx*qz - qw*qy);
+    auto r21 = 2.f * (qy*qz + qw*qx);
+    auto r22 = 1.f - 2.f * (qx*qx + qy*qy);
+    
+    auto R = torch::stack({
+        torch::stack({r00, r01, r02}, -1),
+        torch::stack({r10, r11, r12}, -1),
+        torch::stack({r20, r21, r22}, -1)
+    }, -2); // [K, 3, 3]
+    
+    // --- Step 2: 3D covariance Σ3D = R @ diag(s²) @ Rᵀ ---
+    auto S_sq = s.square(); // [K, 3]
+    auto RS = R * S_sq.unsqueeze(-2); // [K, 3, 3] scale columns
+    auto cov3D = torch::bmm(RS, R.transpose(1, 2)); // [K, 3, 3]
+    
+    // --- Helper: compute log(z² · det(Σ2D)) for a given camera ---
+    auto compute_log_scale = [&](const torch::Tensor& viewmat, float fx, float fy) {
+        // View matrix decomposition
+        auto W = viewmat.slice(0, 0, 3).slice(1, 0, 3);     // [3,3] rotation
+        auto t_off = viewmat.slice(0, 0, 3).index({"...", 3}); // [3] translation
+        
+        // Transform to view space: t = pos @ Wᵀ + t_off
+        auto t = torch::mm(pos, W.t()) + t_off.unsqueeze(0); // [K, 3]
+        auto tz = torch::clamp_min(t.index({"...", 2}), 0.01f);
+        auto tx = t.index({"...", 0});
+        auto ty = t.index({"...", 1});
+        
+        auto tz_inv = 1.0f / tz;
+        auto tz_inv2 = tz_inv * tz_inv;
+        auto zeros_K = torch::zeros_like(tz);
+        
+        // J [K, 2, 3]
+        auto J = torch::stack({
+            torch::stack({fx * tz_inv, zeros_K, -fx * tx * tz_inv2}, -1),
+            torch::stack({zeros_K, fy * tz_inv, -fy * ty * tz_inv2}, -1)
+        }, -2); // [K, 2, 3]
+        
+        // T = J @ W  [K, 2, 3]
+        auto T = torch::matmul(J, W.unsqueeze(0).expand({K, 3, 3}));
+        
+        // Σ2D = T @ Σ3D @ Tᵀ  [K, 2, 2]
+        auto cov2D = torch::bmm(torch::bmm(T, cov3D), T.transpose(1, 2));
+        
+        // det(Σ2D) = cov2D[0,0]*cov2D[1,1] - cov2D[0,1]²
+        auto det = cov2D.index({"...", 0, 0}) * cov2D.index({"...", 1, 1})
+                 - cov2D.index({"...", 0, 1}).square();
+        det = torch::clamp_min(det, 1e-8f);
+        tz = torch::clamp_min(tz, 1e-4f);
+        
+        // log(z² · det(Σ2D)) = 2·log(z) + log(det)
+        return 2.0f * torch::log(tz) + torch::log(det);
+    };
+    
+    // --- Step 3: Compute for both cameras ---
+    auto log_scale_A = compute_log_scale(viewmatrix_A, fx_A, fy_A);
+    auto log_scale_B = compute_log_scale(viewmatrix_B, fx_B, fy_B);
+    
+    // --- Step 4: L_esc = mean(|diff|) ---
+    return torch::abs(log_scale_A - log_scale_B).mean();
 }
 
+// ============================================================================
+// Molding-GS: TSDF-Anchored Gaussian Splatting Loss Functions
+// ============================================================================
 
+/**
+ * @brief SDF Anchor Loss (L_sdf)
+ * 
+ * Pulls Gaussian centers toward the TSDF zero-level set (the actual surface).
+ * Weighted by opacity so that high-opacity (important) Gaussians are more
+ * strongly constrained to lie on the surface.
+ * 
+ * L_sdf = mean( |SDF(μ_i)| × sigmoid(opacity_i) × 1[weight_i > min_weight] )
+ * 
+ * Only applies to Gaussians in well-observed regions (weight > min_weight).
+ * 
+ * @param sdf_values  [N] TSDF value at each Gaussian center
+ * @param opacity     [N, 1] raw opacity (pre-sigmoid logit)
+ * @param weights     [N] TSDF observation weight at each Gaussian center
+ * @param min_weight  Minimum weight to trust SDF (skip unobserved regions)
+ * @return Scalar SDF anchor loss
+ */
+inline torch::Tensor sdf_anchor_loss(
+    torch::Tensor& sdf_values,
+    torch::Tensor& opacity,
+    torch::Tensor& weights,
+    float min_weight = 3.0f)
+{
+    // Mask: only apply where TSDF has been sufficiently observed
+    auto observed_mask = (weights > min_weight).to(torch::kFloat32);  // [N]
+    
+    int64_t num_observed = observed_mask.sum().item<int64_t>();
+    if (num_observed == 0) {
+        return torch::zeros(1, sdf_values.options());
+    }
+    
+    // Opacity weighting: high-opacity Gaussians should obey SDF more strictly
+    auto opacity_weight = torch::sigmoid(opacity.squeeze(-1));  // [N] in [0, 1]
+    
+    // L_sdf = |SDF(μ)| × σ(opacity) × observed
+    auto loss = sdf_values.abs() * opacity_weight * observed_mask;
+    
+    return loss.sum() / std::max<int64_t>(num_observed, 1);
+}
+
+/**
+ * @brief Normal Alignment Loss (L_normal)
+ * 
+ * Aligns the shortest axis (Z-axis) of each Gaussian's rotation to the 
+ * TSDF surface normal. This effectively "flattens" Gaussians into surfels
+ * that lie tangent to the surface.
+ * 
+ * L_normal = mean( (1 - (R_z · n)²) × 1[weight_i > min_weight] )
+ * 
+ * Where R_z is the third column of the rotation matrix (local Z-axis)
+ * and n is the TSDF gradient (surface normal). The loss is zero when
+ * R_z is perfectly aligned with n.
+ * 
+ * @param rotations  [N, 4] quaternions (w, x, y, z) from Gaussian model
+ * @param normals    [N, 3] surface normals from ∇TSDF (normalized)
+ * @param weights    [N] TSDF observation weight
+ * @param min_weight Minimum weight to trust normals
+ * @return Scalar normal alignment loss
+ */
+inline torch::Tensor normal_alignment_loss(
+    torch::Tensor& rotations,
+    torch::Tensor& normals,
+    torch::Tensor& weights,
+    float min_weight = 3.0f)
+{
+    auto observed_mask = (weights > min_weight).to(torch::kFloat32);  // [N]
+    
+    int64_t num_observed = observed_mask.sum().item<int64_t>();
+    if (num_observed == 0) {
+        return torch::zeros(1, rotations.options());
+    }
+    
+    // Extract quaternion components
+    auto qw = rotations.index({"...", 0});
+    auto qx = rotations.index({"...", 1}); 
+    auto qy = rotations.index({"...", 2});
+    auto qz = rotations.index({"...", 3});
+    
+    // Third column of rotation matrix (local Z-axis):
+    // R_z = [2(qx*qz - qw*qy), 2(qy*qz + qw*qx), 1 - 2(qx² + qy²)]
+    auto rz_x = 2.0f * (qx * qz - qw * qy);
+    auto rz_y = 2.0f * (qy * qz + qw * qx);
+    auto rz_z = 1.0f - 2.0f * (qx * qx + qy * qy);
+    
+    // Dot product: R_z · n
+    auto nx = normals.index({"...", 0});
+    auto ny = normals.index({"...", 1});
+    auto nz = normals.index({"...", 2});
+    
+    auto dot = rz_x * nx + rz_y * ny + rz_z * nz;  // [N]
+    
+    // Loss: 1 - (R_z · n)² — zero when perfectly aligned (either direction)
+    auto alignment_error = (1.0f - dot * dot) * observed_mask;
+    
+    return alignment_error.sum() / std::max<int64_t>(num_observed, 1);
+}
+
+} // namespace loss_utils
